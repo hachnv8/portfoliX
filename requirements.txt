@@ -3,7 +3,6 @@ streamlit-autorefresh
 vnstock>=3.5.0
 pandas
 numpy
-sqlite3
 requests
 beautifulsoup4
 vnai
