@@ -1,0 +1,3 @@
+đầu tiên chạy lệnh source .venv/Scripts/activate
+
+tiếp theo chạy streamlit run app.py
