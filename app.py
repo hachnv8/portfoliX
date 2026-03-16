@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
-import mysql.connector
-from mysql.connector import Error
+import mariadb
+from mariadb import Error
 import hashlib
 import os
 
@@ -16,7 +16,7 @@ MYSQL_CONFIG = {
 
 def get_db_connection():
     try:
-        conn = mysql.connector.connect(**MYSQL_CONFIG)
+        conn = mariadb.connect(**MYSQL_CONFIG)
         return conn
     except Error as e:
         st.error(f"Lỗi kết nối MySQL: {e}")

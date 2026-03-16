@@ -13,4 +13,4 @@ matplotlib
 seaborn
 openpyxl
 wordcloud
-mysql-connector-python
+mariadb
