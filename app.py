@@ -94,8 +94,8 @@ if 'logged_in' not in st.session_state:
 
 # Đọc Cookie/LocalStorage để tự động đăng nhập (nếu chưa login)
 if not st.session_state['logged_in']:
-    saved_user_id = localS.getItem("portfolix_user_id", key="get_uid")
-    saved_username = localS.getItem("portfolix_username", key="get_uname")
+    saved_user_id = localS.getItem("portfolix_user_id")
+    saved_username = localS.getItem("portfolix_username")
     
     if saved_user_id and saved_username:
         # Nếu có local storage, tự động gán session và chạy thẳng vào trang trong
@@ -362,7 +362,14 @@ if not portfolio.empty:
 
     if 'Lãi/Lỗ' in portfolio.columns:
         portfolio['% Lãi/Lỗ'] = (portfolio['Lãi/Lỗ'] / portfolio['Tổng vốn']) * 100
-        styled_df = portfolio.style.applymap(color_profit_loss, subset=['Lãi/Lỗ', '% Lãi/Lỗ'])
+        
+        # Sắp xếp danh mục theo Tổng tài sản (Giá trị hiện tại) giảm dần
+        portfolio = portfolio.sort_values(by='Giá trị hiện tại', ascending=False)
+        
+        # Ẩn cột id khỏi giao diện
+        display_df = portfolio.drop(columns=['id']) if 'id' in portfolio.columns else portfolio
+        
+        styled_df = display_df.style.applymap(color_profit_loss, subset=['Lãi/Lỗ', '% Lãi/Lỗ'])
         styled_df = styled_df.format({
             'Giá mua': '{:,.0f}', 'Giá hiện tại': '{:,.0f}',
             'Tổng vốn': '{:,.0f}', 'Giá trị hiện tại': '{:,.0f}',
