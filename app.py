@@ -94,8 +94,8 @@ if 'logged_in' not in st.session_state:
 
 # Đọc Cookie/LocalStorage để tự động đăng nhập (nếu chưa login)
 if not st.session_state['logged_in']:
-    saved_user_id = localS.getItem("portfolix_user_id")
-    saved_username = localS.getItem("portfolix_username")
+    saved_user_id = localS.getItem("portfolix_user_id", key="get_uid")
+    saved_username = localS.getItem("portfolix_username", key="get_uname")
     
     if saved_user_id and saved_username:
         # Nếu có local storage, tự động gán session và chạy thẳng vào trang trong
@@ -219,8 +219,8 @@ if not st.session_state['logged_in']:
                     st.session_state['username'] = l_user
                     
                     # Lưu vào local storage để lần sau không cần đăng nhập lại
-                    localS.setItem("portfolix_user_id", str(uid))
-                    localS.setItem("portfolix_username", l_user)
+                    localS.setItem("portfolix_user_id", str(uid), key="set_uid")
+                    localS.setItem("portfolix_username", l_user, key="set_uname")
                     
                     st.success("Đăng nhập thành công!")
                     st.rerun()
@@ -252,8 +252,8 @@ with st.sidebar:
         st.session_state['user_id'] = None
         st.session_state['username'] = ""
         # Xóa phiên local storage
-        localS.deleteItem("portfolix_user_id")
-        localS.deleteItem("portfolix_username")
+        localS.deleteItem("portfolix_user_id", key="del_uid")
+        localS.deleteItem("portfolix_username", key="del_uname")
         st.rerun()
         
     st.divider()
