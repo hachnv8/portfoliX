@@ -4,6 +4,8 @@ import mysql.connector
 from mysql.connector import Error
 import hashlib
 import os
+import json
+import streamlit.components.v1 as components
 
 # --- CẤU HÌNH DATABASE MYSQL ---
 # Bạn hãy điền thông tin database của mình vào đây
@@ -48,11 +50,35 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users (id)
             )
         ''')
+        # Tạo bảng daily_pnl
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS daily_pnl (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                record_date DATE NOT NULL,
+                total_pnl DOUBLE NOT NULL,
+                total_invested DOUBLE NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users (id),
+                UNIQUE KEY unique_user_date (user_id, record_date)
+            )
+        ''')
         conn.commit()
         cursor.close()
-        conn.close()
 
 init_db()
+
+# --- CẬP NHẬT TỰ ĐỘNG MÃ CỔ PHIẾU ---
+# Chạy script lấy mã cổ phiếu nếu file chưa có hoặc đã cũ hơn 7 ngày
+import os
+import time
+import subprocess
+
+symbols_file = "symbols.txt"
+if not os.path.exists(symbols_file) or (time.time() - os.path.getmtime(symbols_file) > 86400 * 7):
+    try:
+        subprocess.run(["python", "update_symbols.py"], check=True)
+    except Exception as e:
+        print(f"Lỗi khi chạy file cập nhật mã cổ phiếu: {e}")
 
 # --- KHỞI TẠO SESSION STATE ---
 if 'logged_in' not in st.session_state:
@@ -102,27 +128,61 @@ if st.session_state.get('logged_in'):
     portfolio = load_portfolio(user_id)
     if not portfolio.empty:
         try:
-            from vnstock import Trading
+            import requests
             symbols = portfolio['Mã'].unique().tolist()
-            realtime_data = Trading().price_board(symbols)
-            sym_col = next((col for col in realtime_data.columns if 'mã' in col.lower() or 'symbol' in col.lower()), None)
-            price_col = next((col for col in realtime_data.columns if 'khợp lệnh' in col.lower() or 'close' in col.lower() or 'giá' in col.lower()), None)
             
-            if sym_col and price_col:
-                price_dict = dict(zip(realtime_data[sym_col], realtime_data[price_col]))
-                portfolio['Giá hiện tại'] = portfolio['Mã'].map(price_dict).astype(float)
-                portfolio['Tổng vốn'] = portfolio['Giá mua'] * portfolio['Số lượng']
-                portfolio['Giá trị hiện tại'] = portfolio['Giá hiện tại'] * portfolio['Số lượng']
-                portfolio['Lãi/Lỗ'] = portfolio['Giá trị hiện tại'] - portfolio['Tổng vốn']
+            price_dict = {}
+            for sym in symbols:
+                try:
+                    # Using Yahoo Finance to bypass corporate DNS blocks on VN trading sites
+                    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}.VN?range=1d&interval=1d"
+                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+                    res = requests.get(url, headers=headers, timeout=5)
+                    
+                    if res.status_code == 200:
+                        data = res.json()
+                        latest_price = data['chart']['result'][0]['meta']['regularMarketPrice']
+                        if latest_price:
+                            if latest_price < 1000:
+                                latest_price *= 1000 # convert to actual VND value if returned in thousands
+                            price_dict[sym] = latest_price
+                except Exception as e:
+                    print(f"Error fetching {sym} from Yahoo: {e}")
+                    pass            
+            
+            # Map existing prices and fill missing ones with the 'Giá mua' (Buy Price) as fallback or 0
+            if price_dict:
+                portfolio['Giá hiện tại'] = portfolio['Mã'].map(price_dict).fillna(portfolio['Giá mua']).astype(float)
+            else:
+                portfolio['Giá hiện tại'] = portfolio['Giá mua'].astype(float) # Fallback to buy price if API entirely fails
                 
-                total_pnl = portfolio['Lãi/Lỗ'].sum()
-                total_invested = portfolio['Tổng vốn'].sum()
-                pct_pnl = (total_pnl / total_invested * 100) if total_invested else 0
-                
-                # Cập nhật title động
-                sign = "+" if total_pnl >= 0 else ""
-                page_title = f"{sign}{total_pnl:,.0f}đ ({sign}{pct_pnl:.1f}%)"
-        except:
+            portfolio['Tổng vốn'] = portfolio['Giá mua'] * portfolio['Số lượng']
+            portfolio['Giá trị hiện tại'] = portfolio['Giá hiện tại'] * portfolio['Số lượng']
+            portfolio['Lãi/Lỗ'] = portfolio['Giá trị hiện tại'] - portfolio['Tổng vốn']
+            
+            total_pnl = portfolio['Lãi/Lỗ'].sum()
+            total_invested = portfolio['Tổng vốn'].sum()
+            pct_pnl = (total_pnl / total_invested * 100) if total_invested else 0
+            
+            
+            # Cập nhật title động
+            sign = "+" if total_pnl >= 0 else ""
+            page_title = f"{sign}{total_pnl:,.0f}đ ({sign}{pct_pnl:.1f}%)"
+            
+            # Lưu P&L hằng ngày vào database
+            conn = get_db_connection()
+            if conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO daily_pnl (user_id, record_date, total_pnl, total_invested) 
+                    VALUES (%s, CURDATE(), %s, %s) 
+                    ON DUPLICATE KEY UPDATE total_pnl=%s, total_invested=%s
+                """, (user_id, total_pnl, total_invested, total_pnl, total_invested))
+                conn.commit()
+                cursor.close()
+                conn.close()
+        except Exception as e:
+            print(f"Error in PnL calculation block: {e}")
             pass
 
 # Cấu hình trang (phải gọi đầu tiên hoặc sau logic tính toán không dùng streamlit component)
@@ -182,8 +242,16 @@ with st.sidebar:
         
     st.divider()
     st.header("Thêm Cổ phiếu")
+    
+    # Load symbols for autocomplete
+    try:
+        with open("symbols.txt", "r") as f:
+            valid_symbols = [line.strip().upper() for line in f.readlines() if line.strip()]
+    except FileNotFoundError:
+        valid_symbols = ["VCB", "FPT", "HPG", "VHM", "VIC", "VNM", "BID", "CTG", "TCB", "MBB"] # Default fallback
+    
     with st.form("add_stock_form", clear_on_submit=True):
-        symbol = st.text_input("Mã Cổ phiếu (VD: VCB, FPT, HPG)").upper()
+        symbol = st.selectbox("Mã Cổ phiếu", options=[""] + valid_symbols)
         buy_price_input = st.number_input("Giá mua", min_value=0.0, step=0.1)
         quantity = st.number_input("Số lượng cổ phiếu", min_value=1, step=100)
         submitted = st.form_submit_button("Thêm vào danh mục")
@@ -212,6 +280,54 @@ with st.sidebar:
                     st.rerun()
             else:
                 st.warning("Vui lòng nhập mã cổ phiếu.")
+    
+    # --- CHỈNH SỬA / XÓA CỔ PHIẾU CÁ NHÂN ---
+    if not portfolio.empty:
+        st.divider()
+        st.header("Quản lý / Chỉnh sửa Cổ phiếu")
+        
+        # Lấy danh sách mã đang có trong danh mục
+        symbols_in_portfolio = portfolio['Mã'].tolist()
+        selected_symbol = st.selectbox("Chọn mã để sửa/xóa", options=symbols_in_portfolio)
+        
+        if selected_symbol:
+            # Lấy thông tin hiện tại của mã đó
+            row = portfolio[portfolio['Mã'] == selected_symbol].iloc[0]
+            current_price = float(row['Giá mua'])
+            current_qty = int(row['Số lượng'])
+            
+            # Form chỉnh sửa
+            with st.form("edit_stock_form"):
+                new_price_input = st.number_input("Giá mua mới", min_value=0.0, value=current_price/1000 if current_price < 1000000 else current_price, step=0.1)
+                new_qty = st.number_input("Số lượng mới", min_value=1, value=current_qty, step=1)
+                
+                col_edit, col_del = st.columns(2)
+                update_btn = col_edit.form_submit_button("Cập nhật")
+                delete_btn = col_del.form_submit_button("Xóa mã này")
+                
+                if update_btn:
+                    new_price = new_price_input * 1000 if 0 < new_price_input < 1000 else new_price_input
+                    conn = get_db_connection()
+                    if conn:
+                        cursor = conn.cursor()
+                        cursor.execute("UPDATE portfolio SET buy_price = %s, quantity = %s WHERE symbol = %s AND user_id = %s", 
+                                     (new_price, new_qty, selected_symbol, user_id))
+                        conn.commit()
+                        cursor.close()
+                        conn.close()
+                        st.success(f"Đã cập nhật {selected_symbol}!")
+                        st.rerun()
+                
+                if delete_btn:
+                    conn = get_db_connection()
+                    if conn:
+                        cursor = conn.cursor()
+                        cursor.execute("DELETE FROM portfolio WHERE symbol = %s AND user_id = %s", (selected_symbol, user_id))
+                        conn.commit()
+                        cursor.close()
+                        conn.close()
+                        st.warning(f"Đã xóa {selected_symbol}!")
+                        st.rerun()
             
     if st.button("Xóa toàn bộ danh mục"):
         conn = get_db_connection()
@@ -255,6 +371,73 @@ if not portfolio.empty:
         col1.metric("Tổng vốn đầu tư", f"{total_invested:,.0f} VNĐ")
         col2.metric("Giá trị hiện tại", f"{total_value:,.0f} VNĐ")
         col3.metric("Tổng Lãi/Lỗ", f"{total_pnl:,.0f} VNĐ", pct_pnl_str)
+        
+        # Hiển thị Biểu đồ PnL hằng ngày
+        conn = get_db_connection()
+        if conn:
+            daily_query = "SELECT record_date, total_pnl, total_invested FROM daily_pnl WHERE user_id = %s ORDER BY record_date"
+            daily_df = pd.read_sql(daily_query, conn, params=(user_id,))
+            conn.close()
+            
+            if not daily_df.empty:
+                st.divider()
+                st.subheader("📈 Lịch sử Lãi/Lỗ hằng ngày (%)")
+                
+                daily_df['record_date_str'] = pd.to_datetime(daily_df['record_date']).dt.strftime('%d/%m/%Y')
+                
+                # Tính toán % Lãi/Lỗ và làm tròn 2 chữ số thập phân
+                daily_df['pct_pnl'] = ((daily_df['total_pnl'] / daily_df['total_invested']) * 100).round(2)
+                # Xử lý trường hợp chia cho 0 nếu total_invested = 0
+                daily_df['pct_pnl'] = daily_df['pct_pnl'].fillna(0)
+                
+                categories = daily_df['record_date_str'].tolist()
+                data = daily_df['pct_pnl'].tolist()
+                
+                highchart_html = f"""
+                <script src="https://cdnjs.cloudflare.com/ajax/libs/highcharts/11.4.0/highcharts.js"></script>
+                <div id="container" style="width:100%; height:300px;"></div>
+                <script>
+                    var checkInterval = setInterval(function() {{
+                        if (typeof Highcharts !== 'undefined') {{
+                            clearInterval(checkInterval);
+                            Highcharts.chart('container', {{
+                                chart: {{
+                                    type: 'areaspline',
+                                    backgroundColor: 'transparent'
+                                }},
+                                title: {{ text: null }},
+                                xAxis: {{
+                                    categories: {json.dumps(categories)},
+                                    labels: {{ style: {{ color: '#aaaaaa' }} }},
+                                    gridLineColor: '#333333'
+                                }},
+                                yAxis: {{
+                                    title: {{ text: null }},
+                                    labels: {{ format: '{{value}}%', style: {{ color: '#aaaaaa' }} }},
+                                    gridLineColor: '#333333'
+                                }},
+                                legend: {{ enabled: false }},
+                                credits: {{ enabled: false }},
+                                tooltip: {{
+                                    pointFormat: '<b>{{point.y}}%</b>'
+                                }},
+                                plotOptions: {{
+                                    areaspline: {{
+                                        fillOpacity: 0.2,
+                                        color: '#00ff00',
+                                        marker: {{ enabled: true, radius: 4 }}
+                                    }}
+                                }},
+                                series: [{{
+                                    name: 'Lãi/Lỗ',
+                                    data: {json.dumps(data)}
+                                }}]
+                            }});
+                        }}
+                    }}, 50);
+                </script>
+                """
+                components.html(highchart_html, height=330)
     else:
         st.dataframe(portfolio, use_container_width=True, hide_index=True)
 else:
