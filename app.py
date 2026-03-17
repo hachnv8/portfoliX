@@ -6,6 +6,9 @@ import hashlib
 import os
 import json
 import streamlit.components.v1 as components
+from streamlit_local_storage import LocalStorage
+
+localS = LocalStorage()
 
 # --- CẤU HÌNH DATABASE MYSQL TỪ FILE NGOÀI ---
 # Đọc file config.json
@@ -83,11 +86,23 @@ def init_db():
 
 init_db()
 
-# --- KHỞI TẠO SESSION STATE ---
+# --- KHỞI TẠO SESSION STATE VÀ TỰ ĐỘNG ĐĂNG NHẬP ---
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
     st.session_state['user_id'] = None
     st.session_state['username'] = ""
+
+# Đọc Cookie/LocalStorage để tự động đăng nhập (nếu chưa login)
+if not st.session_state['logged_in']:
+    saved_user_id = localS.getItem("portfolix_user_id")
+    saved_username = localS.getItem("portfolix_username")
+    
+    if saved_user_id and saved_username:
+        # Nếu có local storage, tự động gán session và chạy thẳng vào trang trong
+        st.session_state['logged_in'] = True
+        st.session_state['user_id'] = int(saved_user_id)
+        st.session_state['username'] = saved_username
+        st.rerun()
 
 # --- HÀM TRỢ GIÚP ---
 def load_portfolio(user_id):
@@ -202,6 +217,11 @@ if not st.session_state['logged_in']:
                     st.session_state['logged_in'] = True
                     st.session_state['user_id'] = uid
                     st.session_state['username'] = l_user
+                    
+                    # Lưu vào local storage để lần sau không cần đăng nhập lại
+                    localS.setItem("portfolix_user_id", str(uid))
+                    localS.setItem("portfolix_username", l_user)
+                    
                     st.success("Đăng nhập thành công!")
                     st.rerun()
                 else:
@@ -230,6 +250,10 @@ with st.sidebar:
     if st.button("Đăng xuất"):
         st.session_state['logged_in'] = False
         st.session_state['user_id'] = None
+        st.session_state['username'] = ""
+        # Xóa phiên local storage
+        localS.deleteItem("portfolix_user_id")
+        localS.deleteItem("portfolix_username")
         st.rerun()
         
     st.divider()
