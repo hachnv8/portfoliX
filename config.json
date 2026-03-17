@@ -1,0 +1,14 @@
+{
+    "local": {
+        "host": "36.50.135.128",
+        "user": "portfolio_user",
+        "password": "portfolio_password",
+        "database": "portfolio_db"
+    },
+    "production": {
+        "host": "localhost",
+        "user": "portfolio",
+        "password": "portfolio_password",
+        "database": "portfolio_db"
+    }
+}

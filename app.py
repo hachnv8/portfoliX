@@ -7,18 +7,34 @@ import os
 import json
 import streamlit.components.v1 as components
 
-# --- CẤU HÌNH DATABASE MYSQL ---
-# Bạn hãy điền thông tin database của mình vào đây
-MYSQL_CONFIG = {
-    'host': '36.50.135.128',
-    'user': 'portfolio_user',
-    'password': 'portfolio_password',
-    'database': 'portfolio_db'
-}
+# --- CẤU HÌNH DATABASE MYSQL TỪ FILE NGOÀI ---
+# Đọc file config.json
+config_file = "config.json"
+try:
+    with open(config_file, "r") as f:
+        config_data = json.load(f)
+except FileNotFoundError:
+    st.error(f"Không tìm thấy file cấu hình {config_file}!")
+    st.stop()
+
+# Tự động chọn môi trường: 'local' (nếu chạy trên Windows) hoặc 'production' (nếu chạy trên Linux/VPS)
+import platform
+ENVIRONMENT = "local" if platform.system() == "Windows" else "production"
+db_config = config_data.get(ENVIRONMENT, {})
+
+DB_HOST = db_config.get("host", "localhost")
+DB_USER = db_config.get("user", "root")
+DB_PASSWORD = db_config.get("password", "")
+DB_NAME = db_config.get("database", "portfolio_db")
 
 def get_db_connection():
     try:
-        conn = mysql.connector.connect(**MYSQL_CONFIG)
+        conn = mysql.connector.connect(
+            host=DB_HOST,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME
+        )
         return conn
     except Error as e:
         st.error(f"Lỗi kết nối MySQL: {e}")
@@ -67,19 +83,6 @@ def init_db():
 
 init_db()
 
-# --- CẬP NHẬT TỰ ĐỘNG MÃ CỔ PHIẾU ---
-# Chạy script lấy mã cổ phiếu nếu file chưa có hoặc đã cũ hơn 7 ngày
-import os
-import time
-import subprocess
-
-symbols_file = "symbols.txt"
-if not os.path.exists(symbols_file) or (time.time() - os.path.getmtime(symbols_file) > 86400 * 7):
-    try:
-        subprocess.run(["python", "update_symbols.py"], check=True)
-    except Exception as e:
-        print(f"Lỗi khi chạy file cập nhật mã cổ phiếu: {e}")
-
 # --- KHỞI TẠO SESSION STATE ---
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
@@ -127,48 +130,39 @@ user_id = st.session_state.get('user_id')
 if st.session_state.get('logged_in'):
     portfolio = load_portfolio(user_id)
     if not portfolio.empty:
-        symbols = portfolio['Mã'].unique().tolist()
-        price_dict = {}
-        
         try:
             from vnstock import Trading
+            symbols = portfolio['Mã'].unique().tolist()
+            realtime_data = Trading().price_board(symbols)
+            sym_col = next((col for col in realtime_data.columns if 'mã' in col.lower() or 'symbol' in col.lower()), None)
+            price_col = next((col for col in realtime_data.columns if 'khớp lệnh' in col.lower() or 'close' in col.lower() or 'giá' in col.lower()), None)
             
-            if symbols:
-                try:
-                    # Using vnstock to fetch the real-time prices for the entire portfolio at once
-                    df_prices = Trading().price_board(symbols)
-                    for _, row in df_prices.iterrows():
-                        sym = row['symbol']
-                        latest_price = row['close_price']
-                        if pd.notna(latest_price) and latest_price > 0:
-                            if latest_price < 1000:
-                                latest_price *= 1000 # Convert to actual VND value if returned in thousands
-                            price_dict[sym] = latest_price
-                except Exception as e:
-                    print(f"Error fetching from vnstock: {e}")
+            if sym_col and price_col:
+                price_dict = dict(zip(realtime_data[sym_col], realtime_data[price_col]))
+                
+                # Cập nhật giá, thêm điều kiện xử lý giá bị ngàn (nhân lên 1000)
+                portfolio['Giá hiện tại'] = portfolio['Mã'].map(price_dict).astype(float)
+                portfolio['Giá hiện tại'] = portfolio['Giá hiện tại'].apply(lambda x: x * 1000 if pd.notna(x) and x < 1000 else x)
+                portfolio['Giá hiện tại'] = portfolio['Giá hiện tại'].fillna(portfolio['Giá mua'])
+                
+                portfolio['Tổng vốn'] = portfolio['Giá mua'] * portfolio['Số lượng']
+                portfolio['Giá trị hiện tại'] = portfolio['Giá hiện tại'] * portfolio['Số lượng']
+                portfolio['Lãi/Lỗ'] = portfolio['Giá trị hiện tại'] - portfolio['Tổng vốn']
+                
+                total_pnl = portfolio['Lãi/Lỗ'].sum()
+                total_invested = portfolio['Tổng vốn'].sum()
+                pct_pnl = (total_pnl / total_invested * 100) if total_invested else 0
+                
+                # Cập nhật title động
+                sign = "+" if total_pnl >= 0 else ""
+                page_title = f"{sign}{total_pnl:,.0f}đ ({sign}{pct_pnl:.1f}%)"
         except ImportError:
             st.error("Thư viện vnstock chưa được cài đặt. Hãy chạy: pip install vnstock")
-            
-        # Map existing prices and fill missing ones with the 'Giá mua' (Buy Price) as fallback or 0
-            if price_dict:
-                portfolio['Giá hiện tại'] = portfolio['Mã'].map(price_dict).fillna(portfolio['Giá mua']).astype(float)
-            else:
-                portfolio['Giá hiện tại'] = portfolio['Giá mua'].astype(float) # Fallback to buy price if API entirely fails
-                
-            portfolio['Tổng vốn'] = portfolio['Giá mua'] * portfolio['Số lượng']
-            portfolio['Giá trị hiện tại'] = portfolio['Giá hiện tại'] * portfolio['Số lượng']
-            portfolio['Lãi/Lỗ'] = portfolio['Giá trị hiện tại'] - portfolio['Tổng vốn']
-            
-            total_pnl = portfolio['Lãi/Lỗ'].sum()
-            total_invested = portfolio['Tổng vốn'].sum()
-            pct_pnl = (total_pnl / total_invested * 100) if total_invested else 0
-            
-            
-            # Cập nhật title động
-            sign = "+" if total_pnl >= 0 else ""
-            page_title = f"{sign}{total_pnl:,.0f}đ ({sign}{pct_pnl:.1f}%)"
-            
-            # Lưu P&L hằng ngày vào database
+        except Exception as e:
+            print(f"Error in vnstock calculation: {e}")
+        
+        # Lưu P&L hằng ngày vào database
+        try:
             conn = get_db_connection()
             if conn:
                 cursor = conn.cursor()
@@ -181,8 +175,7 @@ if st.session_state.get('logged_in'):
                 cursor.close()
                 conn.close()
         except Exception as e:
-            print(f"Error in PnL calculation block: {e}")
-            pass
+            print(f"Error in PnL database saving: {e}")
 
 # Cấu hình trang (phải gọi đầu tiên hoặc sau logic tính toán không dùng streamlit component)
 st.set_page_config(page_title=page_title, layout="wide")
@@ -241,16 +234,9 @@ with st.sidebar:
         
     st.divider()
     st.header("Thêm Cổ phiếu")
-    
-    # Load symbols for autocomplete
-    try:
-        with open("symbols.txt", "r") as f:
-            valid_symbols = [line.strip().upper() for line in f.readlines() if line.strip()]
-    except FileNotFoundError:
-        valid_symbols = ["VCB", "FPT", "HPG", "VHM", "VIC", "VNM", "BID", "CTG", "TCB", "MBB"] # Default fallback
-    
     with st.form("add_stock_form", clear_on_submit=True):
-        symbol = st.selectbox("Mã Cổ phiếu", options=[""] + valid_symbols)
+        symbol_input = st.text_input("Mã Cổ phiếu (VD: VCB)")
+        symbol = symbol_input.upper().strip() if symbol_input else ""
         buy_price_input = st.number_input("Giá mua", min_value=0.0, step=0.1)
         quantity = st.number_input("Số lượng cổ phiếu", min_value=1, step=100)
         submitted = st.form_submit_button("Thêm vào danh mục")
