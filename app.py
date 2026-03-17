@@ -127,30 +127,29 @@ user_id = st.session_state.get('user_id')
 if st.session_state.get('logged_in'):
     portfolio = load_portfolio(user_id)
     if not portfolio.empty:
+        symbols = portfolio['Mã'].unique().tolist()
+        price_dict = {}
+        
         try:
-            import requests
-            symbols = portfolio['Mã'].unique().tolist()
+            from vnstock import Trading
             
-            price_dict = {}
-            for sym in symbols:
+            if symbols:
                 try:
-                    # Using Yahoo Finance to bypass corporate DNS blocks on VN trading sites
-                    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}.VN?range=1d&interval=1d"
-                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-                    res = requests.get(url, headers=headers, timeout=5)
-                    
-                    if res.status_code == 200:
-                        data = res.json()
-                        latest_price = data['chart']['result'][0]['meta']['regularMarketPrice']
-                        if latest_price:
+                    # Using vnstock to fetch the real-time prices for the entire portfolio at once
+                    df_prices = Trading().price_board(symbols)
+                    for _, row in df_prices.iterrows():
+                        sym = row['symbol']
+                        latest_price = row['close_price']
+                        if pd.notna(latest_price) and latest_price > 0:
                             if latest_price < 1000:
-                                latest_price *= 1000 # convert to actual VND value if returned in thousands
+                                latest_price *= 1000 # Convert to actual VND value if returned in thousands
                             price_dict[sym] = latest_price
                 except Exception as e:
-                    print(f"Error fetching {sym} from Yahoo: {e}")
-                    pass            
+                    print(f"Error fetching from vnstock: {e}")
+        except ImportError:
+            st.error("Thư viện vnstock chưa được cài đặt. Hãy chạy: pip install vnstock")
             
-            # Map existing prices and fill missing ones with the 'Giá mua' (Buy Price) as fallback or 0
+        # Map existing prices and fill missing ones with the 'Giá mua' (Buy Price) as fallback or 0
             if price_dict:
                 portfolio['Giá hiện tại'] = portfolio['Mã'].map(price_dict).fillna(portfolio['Giá mua']).astype(float)
             else:
