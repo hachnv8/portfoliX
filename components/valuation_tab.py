@@ -39,7 +39,7 @@ def evaluate_stock_with_ai(api_key, symbol, stock_data, user_notes, image_paths)
         
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.0-flash')
         
         prompt = f"""
         Bạn là một chuyên gia phân tích tài chính chứng khoán độc lập và sắc sảo.
@@ -68,9 +68,21 @@ def evaluate_stock_with_ai(api_key, symbol, stock_data, user_notes, image_paths)
                 if os.path.exists(img_path):
                     img = Image.open(img_path)
                     contents.append(img)
-                    
-        response = model.generate_content(contents)
-        return response.text
+        
+        # Tự động retry nếu bị rate limit (429)
+        import time
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = model.generate_content(contents)
+                return response.text
+            except Exception as retry_err:
+                if '429' in str(retry_err) and attempt < max_retries - 1:
+                    wait_time = 35 * (attempt + 1)
+                    st.toast(f"⏳ Đang chờ hết giới hạn free tier ({wait_time}s)... Lần thử {attempt + 2}/{max_retries}")
+                    time.sleep(wait_time)
+                else:
+                    raise retry_err
         
     except Exception as e:
         return f"Lỗi trong quá trình gọi AI: {str(e)}"

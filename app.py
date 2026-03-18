@@ -16,7 +16,10 @@ if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
     st.session_state['user_id'] = None
     st.session_state['username'] = ""
-    st.session_state['page_title_info'] = "Danh mục đầu tư" # Session state giữ title tạm
+    st.session_state['page_title_info'] = "Danh mục đầu tư"
+
+if 'active_tab' not in st.session_state:
+    st.session_state['active_tab'] = 0  # 0 = Danh mục, 1 = Tiêu chí, 2 = Định giá
 
 # Đọc Cookie/LocalStorage để tự động đăng nhập (nếu chưa login)
 if not st.session_state['logged_in']:
@@ -29,13 +32,19 @@ if not st.session_state['logged_in']:
         st.session_state['username'] = saved_username
         st.rerun()
 
-# Cấu hình trang (Tên tab trên trình duyệt sẽ lấy từ session_state)
+# Cấu hình trang
 st.set_page_config(page_title=st.session_state.get('page_title_info', 'Danh mục đầu tư'), layout="wide")
 
+# Tự động refresh CHỈ khi đang ở tab Danh mục (tab 0)
+if st.session_state['logged_in'] and st.session_state.get('active_tab', 0) == 0:
+    try:
+        from streamlit_autorefresh import st_autorefresh
+        st_autorefresh(interval=30000, limit=None, key="data_refresh")
+    except ImportError:
+        pass
 
 # --- GIAO DIỆN CHÍNH (ROUTER) ---
 if not st.session_state['logged_in']:
-    # Hiển thị giao diện đăng nhập nếu chưa log in
     success, uid, uname = render_auth_ui(localS)
     if success:
         st.session_state['logged_in'] = True
@@ -43,32 +52,46 @@ if not st.session_state['logged_in']:
         st.session_state['username'] = uname
         st.rerun()
 else:
-    # 1. Tải danh mục hiện tại của User
     user_id = st.session_state['user_id']
     portfolio = load_portfolio(user_id)
     
-    # 2. Hiển thị Sidebar
     needs_rerun = render_sidebar(localS, portfolio)
     if needs_rerun:
         st.rerun()
         
-    # 3. Main Layout
     st.header(f"📊 Danh mục của {st.session_state['username']}")
-    tab_port, tab_crit, tab_val = st.tabs(["Danh mục đầu tư", "Tiêu chí Định giá", "Định giá Cổ phiếu"])
     
-    with tab_port:
-        try:
-            from streamlit_autorefresh import st_autorefresh
-            st_autorefresh(interval=30000, limit=None, key="data_refresh")
-        except ImportError:
-            pass
+    # Dùng radio button ẩn để track active tab
+    tab_names = ["Danh mục đầu tư", "Tiêu chí Định giá", "Định giá Cổ phiếu"]
+    
+    # Tạo 3 cột cho các nút chuyển tab (styling giống tab)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("📈 Danh mục đầu tư", use_container_width=True, 
+                     type="primary" if st.session_state['active_tab'] == 0 else "secondary"):
+            st.session_state['active_tab'] = 0
+            st.rerun()
+    with col2:
+        if st.button("⚙️ Tiêu chí Định giá", use_container_width=True,
+                     type="primary" if st.session_state['active_tab'] == 1 else "secondary"):
+            st.session_state['active_tab'] = 1
+            st.rerun()
+    with col3:
+        if st.button("🤖 Định giá Cổ phiếu", use_container_width=True,
+                     type="primary" if st.session_state['active_tab'] == 2 else "secondary"):
+            st.session_state['active_tab'] = 2
+            st.rerun()
+    
+    st.divider()
+    
+    # Hiển thị nội dung tab tương ứng
+    active = st.session_state['active_tab']
+    
+    if active == 0:
         _, _, new_title = render_portfolio_tab(portfolio, user_id)
-        # Cập nhật title trình duyệt nếu có thay đổi
         if new_title != st.session_state.get('page_title_info'):
             st.session_state['page_title_info'] = new_title
-            
-    with tab_crit:
+    elif active == 1:
         render_criteria_tab()
-            
-    with tab_val:
+    elif active == 2:
         render_valuation_tab()
