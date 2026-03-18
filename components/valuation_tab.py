@@ -131,14 +131,15 @@ def render_valuation_tab():
         summary_rows = []
         for _, row in analysis_df.iterrows():
             entry_str = f"{row['entry_min']:.1f} - {row['entry_max']:.1f}" if pd.notna(row['entry_min']) and pd.notna(row['entry_max']) else ''
-            if row['current_zone'] == 'Green':
+            zone_val = str(row['current_zone']).lower() if pd.notna(row['current_zone']) else ''
+            if zone_val in ['green', 'xanh']:
                 zone_html = '<span style="background-color: #e6f4ea; color: #1e8e3e; padding: 4px 12px; border-radius: 20px; font-weight: bold;">🟢 Xanh</span>'
-            elif row['current_zone'] == 'Pink':
+            elif zone_val in ['pink', 'hồng', 'hong']:
                 zone_html = '<span style="background-color: #fce8e6; color: #d93025; padding: 4px 12px; border-radius: 20px; font-weight: bold;">🔴 Hồng</span>'
-            elif row['current_zone'] == 'Neutral':
+            elif zone_val in ['neutral', 'trung tính', 'trung tinh', 'vàng', 'cam']:
                 zone_html = '<span style="background-color: #fef7e0; color: #b08d00; padding: 4px 12px; border-radius: 20px; font-weight: bold;">🟡 Trung tính</span>'
             else:
-                zone_html = row['current_zone'] if row['current_zone'] else ''
+                zone_html = row['current_zone'] if pd.notna(row['current_zone']) else ''
                 
             signal = row['signal_status'].replace('_', ' ') if row['signal_status'] else ''
             action = row['action'].replace('_', ' ') if row['action'] else ''
@@ -155,15 +156,15 @@ def render_valuation_tab():
             })
         
         summary_df = pd.DataFrame(summary_rows)
-        # Sử dụng HTML Table để render được badge màu
-        table_html = summary_df.to_html(escape=False, index=False)
+        # Loại bỏ khoảng trắng và xuống dòng để st.markdown không chuyển HTML thành Code Block
+        table_html = summary_df.to_html(escape=False, index=False).replace('\n', '')
         st.markdown(f"""<style>
 .custom-stock-table {{ width: 100%; border-collapse: collapse; font-family: ui-sans-serif, system-ui, -apple-system; font-size: 14px; margin-bottom: 20px; }}
 .custom-stock-table th {{ border-bottom: 2px solid #f0f2f6; color: #31333F; font-weight: 600; padding: 10px 16px; text-align: left; }}
 .custom-stock-table td {{ border-bottom: 1px solid #f0f2f6; padding: 10px 16px; color: #31333F; vertical-align: middle; }}
 </style>
 <div style="overflow-x:auto;">
-    {table_html.replace('<table border="1" class="dataframe">', '<table class="custom-stock-table">')}
+{table_html.replace('<table border="1" class="dataframe">', '<table class="custom-stock-table">')}
 </div>""", unsafe_allow_html=True)
         
         # Chi tiết từng mã
