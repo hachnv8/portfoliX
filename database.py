@@ -3,6 +3,9 @@ from mysql.connector import Error
 import json
 import streamlit as st
 import platform
+import os
+import base64
+from cryptography.fernet import Fernet
 
 # Đọc file config.json
 config_file = "config.json"
@@ -70,9 +73,96 @@ def init_db():
                 UNIQUE KEY unique_user_date (user_id, record_date)
             )
         ''')
+        # Tạo bảng valuation_criteria
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS valuation_criteria (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                criteria_name VARCHAR(255) NOT NULL,
+                notes TEXT,
+                image_paths JSON,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            )
+        ''')
+        # Tạo bảng user_api_keys (lưu key đã mã hoá)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_api_keys (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL UNIQUE,
+                service_name VARCHAR(100) NOT NULL DEFAULT 'gemini',
+                encrypted_key TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            )
+        ''')
         conn.commit()
         cursor.close()
         conn.close()
 
 # Tự động khởi tạo DB khi module được load
 init_db()
+
+# === MÃ HOÁ API KEY ===
+_ENCRYPTION_KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.encryption_key')
+
+def _get_encryption_key():
+    """Lấy hoặc tạo mới encryption key (Fernet symmetric key)."""
+    if os.path.exists(_ENCRYPTION_KEY_FILE):
+        with open(_ENCRYPTION_KEY_FILE, 'rb') as f:
+            return f.read()
+    else:
+        key = Fernet.generate_key()
+        with open(_ENCRYPTION_KEY_FILE, 'wb') as f:
+            f.write(key)
+        return key
+
+def encrypt_api_key(plain_key):
+    """Mã hoá API key."""
+    fernet = Fernet(_get_encryption_key())
+    return fernet.encrypt(plain_key.encode()).decode()
+
+def decrypt_api_key(encrypted_key):
+    """Giải mã API key."""
+    try:
+        fernet = Fernet(_get_encryption_key())
+        return fernet.decrypt(encrypted_key.encode()).decode()
+    except Exception:
+        return None
+
+def save_user_api_key(user_id, plain_key, service_name='gemini'):
+    """Lưu API key đã mã hoá vào DB."""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    try:
+        encrypted = encrypt_api_key(plain_key)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO user_api_keys (user_id, service_name, encrypted_key) 
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE encrypted_key = %s, service_name = %s
+        """, (user_id, service_name, encrypted, encrypted, service_name))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Error saving API key: {e}")
+        return False
+
+def load_user_api_key(user_id, service_name='gemini'):
+    """Load và giải mã API key từ DB. Trả về plain key hoặc None."""
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT encrypted_key FROM user_api_keys WHERE user_id = %s AND service_name = %s", (user_id, service_name))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        if row:
+            return decrypt_api_key(row[0])
+        return None
+    except Exception:
+        return None
