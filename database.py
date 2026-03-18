@@ -95,6 +95,35 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users (id)
             )
         ''')
+        # Tạo/migrate bảng stock_analysis (đúng cấu trúc JSON)
+        # Kiểm tra nếu bảng cũ (có buy_point_1) thì xóa và tạo lại
+        cursor.execute("SHOW TABLES LIKE 'stock_analysis'")
+        if cursor.fetchone():
+            cursor.execute("SHOW COLUMNS FROM stock_analysis LIKE 'buy_point_1'")
+            if cursor.fetchone():
+                # Bảng cũ, xóa tạo lại
+                cursor.execute("DROP TABLE stock_analysis")
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS stock_analysis (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                symbol VARCHAR(20) NOT NULL,
+                p_e DOUBLE,
+                p_b DOUBLE,
+                eps_status VARCHAR(50),
+                current_zone VARCHAR(50),
+                signal_status VARCHAR(100),
+                is_buying_zone BOOLEAN DEFAULT FALSE,
+                entry_min DOUBLE,
+                entry_max DOUBLE,
+                target DOUBLE,
+                action VARCHAR(100),
+                analysis_note TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (id),
+                UNIQUE KEY unique_user_symbol (user_id, symbol)
+            )
+        ''')
         conn.commit()
         cursor.close()
         conn.close()

@@ -27,40 +27,56 @@ def render_portfolio_tab(portfolio, user_id):
     
     try:
         from vnstock import Trading
-        symbols = portfolio['Mã'].unique().tolist()
-        realtime_data = Trading().price_board(symbols)
-        sym_col = next((col for col in realtime_data.columns if 'mã' in col.lower() or 'symbol' in col.lower()), None)
-        price_col = next((col for col in realtime_data.columns if 'khớp lệnh' in col.lower() or 'close' in col.lower() or 'giá' in col.lower()), None)
-        ref_col = next((col for col in realtime_data.columns if 'tham chiếu' in col.lower() or 'reference' in col.lower()), None)
+        import time as _time
         
-        if sym_col and price_col and ref_col:
-            price_dict = dict(zip(realtime_data[sym_col], realtime_data[price_col]))
-            ref_dict = dict(zip(realtime_data[sym_col], realtime_data[ref_col]))
-            
-            # Cập nhật giá, thêm điều kiện xử lý giá bị ngàn (nhân lên 1000)
-            portfolio['Giá hiện tại'] = portfolio['Mã'].map(price_dict).astype(float)
-            portfolio['Giá hiện tại'] = portfolio['Giá hiện tại'].apply(lambda x: x * 1000 if pd.notna(x) and x < 1000 else x)
-            portfolio['Giá hiện tại'] = portfolio['Giá hiện tại'].fillna(portfolio['Giá mua'])
-            
-            # Cập nhật giá tham chiếu
-            portfolio['Giá tham chiếu'] = portfolio['Mã'].map(ref_dict).astype(float)
-            portfolio['Giá tham chiếu'] = portfolio['Giá tham chiếu'].apply(lambda x: x * 1000 if pd.notna(x) and x < 1000 else x)
-            portfolio['Giá tham chiếu'] = portfolio['Giá tham chiếu'].fillna(portfolio['Giá hiện tại'])
-            
-            portfolio['Tổng vốn'] = portfolio['Giá mua'] * portfolio['Số lượng']
-            portfolio['Giá trị hiện tại'] = portfolio['Giá hiện tại'] * portfolio['Số lượng']
-            portfolio['Lãi/Lỗ'] = portfolio['Giá trị hiện tại'] - portfolio['Tổng vốn']
-            
-            # Tính Lãi/Lỗ trong ngày
-            portfolio['Lãi/Lỗ trong ngày'] = (portfolio['Giá hiện tại'] - portfolio['Giá tham chiếu']) * portfolio['Số lượng']
-            
-            total_pnl = portfolio['Lãi/Lỗ'].sum()
-            total_invested = portfolio['Tổng vốn'].sum()
-            pct_pnl_val = (total_pnl / total_invested * 100) if total_invested else 0
-            
-            # Tính toán string title cho app.py (nếu muốn tiếp tục cập nhật title động)
-            sign = "+" if total_pnl >= 0 else ""
-            page_title_info = f"{sign}{total_pnl:,.0f}đ ({sign}{pct_pnl_val:.1f}%)"
+        symbols = portfolio['Mã'].unique().tolist()
+        realtime_data = None
+        max_retries = 3
+        
+        for attempt in range(max_retries):
+            try:
+                with st.status(f"🔄 Đang kết nối vnstock... (lần {attempt + 1}/{max_retries})", expanded=True) as status:
+                    st.write(f"Đang lấy giá realtime cho: {', '.join(symbols)}")
+                    realtime_data = Trading().price_board(symbols)
+                    status.update(label="✅ Kết nối vnstock thành công!", state="complete")
+                break  # Thành công, thoát loop
+            except Exception as retry_err:
+                if attempt < max_retries - 1:
+                    st.warning(f"⚠️ Lần {attempt + 1}: Không kết nối được vnstock ({retry_err}). Thử lại sau 5 giây...")
+                    _time.sleep(5)
+                else:
+                    st.error(f"❌ Không thể kết nối vnstock sau {max_retries} lần thử. Lỗi: {retry_err}")
+                    st.info("💡 Hiển thị danh mục với dữ liệu cơ bản (không có giá realtime).")
+        
+        if realtime_data is not None and not realtime_data.empty:
+            sym_col = next((col for col in realtime_data.columns if 'mã' in col.lower() or 'symbol' in col.lower()), None)
+            price_col = next((col for col in realtime_data.columns if 'khớp lệnh' in col.lower() or 'close' in col.lower() or 'giá' in col.lower()), None)
+            ref_col = next((col for col in realtime_data.columns if 'tham chiếu' in col.lower() or 'reference' in col.lower()), None)
+        
+            if sym_col and price_col and ref_col:
+                price_dict = dict(zip(realtime_data[sym_col], realtime_data[price_col]))
+                ref_dict = dict(zip(realtime_data[sym_col], realtime_data[ref_col]))
+                
+                portfolio['Giá hiện tại'] = portfolio['Mã'].map(price_dict).astype(float)
+                portfolio['Giá hiện tại'] = portfolio['Giá hiện tại'].apply(lambda x: x * 1000 if pd.notna(x) and x < 1000 else x)
+                portfolio['Giá hiện tại'] = portfolio['Giá hiện tại'].fillna(portfolio['Giá mua'])
+                
+                portfolio['Giá tham chiếu'] = portfolio['Mã'].map(ref_dict).astype(float)
+                portfolio['Giá tham chiếu'] = portfolio['Giá tham chiếu'].apply(lambda x: x * 1000 if pd.notna(x) and x < 1000 else x)
+                portfolio['Giá tham chiếu'] = portfolio['Giá tham chiếu'].fillna(portfolio['Giá hiện tại'])
+                
+                portfolio['Tổng vốn'] = portfolio['Giá mua'] * portfolio['Số lượng']
+                portfolio['Giá trị hiện tại'] = portfolio['Giá hiện tại'] * portfolio['Số lượng']
+                portfolio['Lãi/Lỗ'] = portfolio['Giá trị hiện tại'] - portfolio['Tổng vốn']
+                
+                portfolio['Lãi/Lỗ trong ngày'] = (portfolio['Giá hiện tại'] - portfolio['Giá tham chiếu']) * portfolio['Số lượng']
+                
+                total_pnl = portfolio['Lãi/Lỗ'].sum()
+                total_invested = portfolio['Tổng vốn'].sum()
+                pct_pnl_val = (total_pnl / total_invested * 100) if total_invested else 0
+                
+                sign = "+" if total_pnl >= 0 else ""
+                page_title_info = f"{sign}{total_pnl:,.0f}đ ({sign}{pct_pnl_val:.1f}%)"
             
     except ImportError:
         st.error("Thư viện vnstock chưa được cài đặt. Hãy chạy: pip install vnstock")

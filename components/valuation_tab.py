@@ -1,195 +1,268 @@
 import streamlit as st
 import pandas as pd
-from PIL import Image
-import os
+import json
+from database import get_db_connection
 
-try:
-    import google.generativeai as genai
-    HAS_GENAI = True
-except ImportError:
-    HAS_GENAI = False
 
-def fetch_stock_data(symbol):
-    """
-    Sử dụng vnstock để lấy dữ liệu cơ bản của mã cổ phiếu.
-    """
+def save_analysis_json(user_id, json_data):
+    """Lưu toàn bộ dữ liệu từ JSON vào DB đúng cấu trúc."""
+    conn = get_db_connection()
+    if not conn:
+        return False
     try:
-        from vnstock import stock_historical_data, financial_ratio
-        import datetime
+        cursor = conn.cursor()
+        for t in json_data.get('tickers', []):
+            symbol = t['symbol']
+            fund = t.get('fundamental', {})
+            tech = t.get('technical_status', {})
+            plan = t.get('trading_plan', {})
+            note = t.get('analysis_note', '')
+            
+            cursor.execute("""
+                INSERT INTO stock_analysis 
+                    (user_id, symbol, p_e, p_b, eps_status, current_zone, signal_status, is_buying_zone, entry_min, entry_max, target, action, analysis_note)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE 
+                    p_e=%s, p_b=%s, eps_status=%s, current_zone=%s, signal_status=%s, is_buying_zone=%s,
+                    entry_min=%s, entry_max=%s, target=%s, action=%s, analysis_note=%s
+            """, (
+                user_id, symbol,
+                fund.get('p_e'), fund.get('p_b'), fund.get('eps_status'),
+                tech.get('current_zone'), tech.get('signal'), tech.get('is_buying_zone', False),
+                plan.get('entry_min'), plan.get('entry_max'), plan.get('target'), plan.get('action'),
+                note,
+                # ON DUPLICATE UPDATE values:
+                fund.get('p_e'), fund.get('p_b'), fund.get('eps_status'),
+                tech.get('current_zone'), tech.get('signal'), tech.get('is_buying_zone', False),
+                plan.get('entry_min'), plan.get('entry_max'), plan.get('target'), plan.get('action'),
+                note
+            ))
         
-        try:
-            ratio_df = financial_ratio(symbol, 'yearly', True)
-            if not ratio_df.empty:
-                return ratio_df.iloc[:, :5].to_string()
-            return "Không tìm thấy dữ liệu tài chính cho mã này."
-        except Exception as e:
-            return f"Lỗi khi lấy dữ liệu tài chính: {e}"
-    except ImportError:
-        return "Thư viện vnstock chưa được cài đặt."
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
     except Exception as e:
-        return f"Lỗi không xác định: {e}"
+        st.error(f"Lỗi lưu dữ liệu: {e}")
+        return False
 
 
-def evaluate_stock_with_ai(api_key, symbol, stock_data, user_notes, image_paths):
-    """
-    Gọi Google Gemini API để đánh giá dựa trên dữ liệu & Tiêu chí của user.
-    """
-    if not HAS_GENAI:
-        return "Thư viện google-generativeai chưa được cài đặt xong. Vui lòng chờ trong giây lát hoặc thử lại."
-        
+def load_all_analysis(user_id):
+    """Lấy toàn bộ phân tích."""
+    conn = get_db_connection()
+    if not conn:
+        return pd.DataFrame()
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        df = pd.read_sql("""
+            SELECT symbol, p_e, p_b, eps_status, current_zone, signal_status, 
+                   is_buying_zone, entry_min, entry_max, target, action, analysis_note, updated_at
+            FROM stock_analysis WHERE user_id = %s ORDER BY symbol
+        """, conn, params=(user_id,))
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def delete_stock_analysis(user_id, symbol):
+    """Xóa phân tích 1 mã."""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM stock_analysis WHERE user_id = %s AND symbol = %s", (user_id, symbol.upper()))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return True
+
+
+def check_buy_alerts(portfolio_df, user_id):
+    """So sánh giá hiện tại với vùng mua (entry_min - entry_max)."""
+    alerts = []
+    if portfolio_df.empty or 'Giá hiện tại' not in portfolio_df.columns:
+        return alerts
+    
+    analysis_df = load_all_analysis(user_id)
+    if analysis_df.empty:
+        return alerts
+    
+    for _, row in portfolio_df.iterrows():
+        symbol = row['Mã']
+        current_price = row.get('Giá hiện tại', 0)
+        if not current_price or current_price == 0:
+            continue
         
-        prompt = f"""
-        Bạn là một chuyên gia phân tích tài chính chứng khoán độc lập và sắc sảo.
-        Nhiệm vụ của bạn là định giá và phân tích mã cổ phiếu: {symbol.upper()}.
+        match = analysis_df[analysis_df['symbol'] == symbol]
+        if match.empty:
+            continue
         
-        Dưới đây là dữ liệu tài chính các năm gần nhất của công ty:
-        {stock_data}
+        a = match.iloc[0]
+        entry_min = a.get('entry_min')
+        entry_max = a.get('entry_max')
         
-        -- QUAN TRỌNG: TIÊU CHÍ ĐÁNH GIÁ CỦA TÔI --
-        Vui lòng phân tích và kết luận DỰA TRÊN NGHIÊM NGẶT các tiêu chí và ghi chú sau đây của tôi:
-        {user_notes if user_notes else "Không có ghi chú text nào."}
-        
-        Bên cạnh đó, tôi có đính kèm các hình ảnh mẫu (công thức, đồ thị, bảng biểu). Hãy đọc và áp dụng các thông tin trong ảnh vào việc định giá.
-        
-        YÊU CẦU ĐẦU RA:
-        1. Đánh giá Tích cực / Tiêu cực dựa trên các tiêu chí của tôi.
-        2. Dựa theo dữ liệu cung cấp, định giá xem mã cổ phiếu này hiện tại Đang Rẻ, Đang Đắt, hay Hợp lý so với các tiêu chí tôi đưa ra.
-        3. Kết luận ngắn gọn có nên đưa vào danh mục theo chiến lược của tôi hay không.
-        (Định dạng kết quả bằng Markdown đẹp mắt).
-        """
-        
-        contents = [prompt]
-        
-        if image_paths:
-            for img_path in image_paths:
-                if os.path.exists(img_path):
-                    img = Image.open(img_path)
-                    contents.append(img)
-        
-        # Tự động retry nếu bị rate limit (429)
-        import time
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                response = model.generate_content(contents)
-                return response.text
-            except Exception as retry_err:
-                if '429' in str(retry_err) and attempt < max_retries - 1:
-                    wait_time = 35 * (attempt + 1)
-                    st.toast(f"⏳ Đang chờ hết giới hạn free tier ({wait_time}s)... Lần thử {attempt + 2}/{max_retries}")
-                    time.sleep(wait_time)
-                else:
-                    raise retry_err
-        
-    except Exception as e:
-        return f"Lỗi trong quá trình gọi AI: {str(e)}"
-        
+        if pd.notna(entry_min) and pd.notna(entry_max):
+            low = float(entry_min) * 1000
+            high = float(entry_max) * 1000
+            if low <= current_price <= high:
+                alerts.append(f"🔔 **{symbol}** đang ở VÙNG MUA: {entry_min} - {entry_max} (Giá: {current_price:,.0f})")
+            elif current_price < low:
+                alerts.append(f"🚨 **{symbol}** THẤP HƠN vùng mua {entry_min} (Giá: {current_price:,.0f}) — Cơ hội tích sản!")
+    
+    return alerts
+
 
 def render_valuation_tab():
-    """
-    Giao diện và Logic cho Tab Định Giá Cổ phiếu.
-    """
-    from components.criteria_tab import load_criteria_list, load_criteria_detail
-    from database import save_user_api_key, load_user_api_key
-    
+    """Tab Phân tích Cổ phiếu — Import JSON hoặc xem chi tiết."""
     user_id = st.session_state.get('user_id')
     if not user_id:
         st.warning("Vui lòng đăng nhập.")
         return
 
-    # Auto-load API key từ DB nếu chưa có trong session
-    if 'gemini_api_key' not in st.session_state or not st.session_state['gemini_api_key']:
-        saved_key = load_user_api_key(user_id)
-        if saved_key:
-            st.session_state['gemini_api_key'] = saved_key
-
-    st.subheader("🤖 Phân tích & Định giá bằng AI (Gemini)")
+    st.subheader("📊 Phân tích & Chiến lược Cổ phiếu")
     
-    # Khu vực cấu hình API Key
-    has_key = bool(st.session_state.get('gemini_api_key'))
-    with st.expander("🔑 Cấu hình Google Gemini API Key", expanded=not has_key):
-        if has_key:
-            st.success("✅ API Key đã được lưu và mã hoá trong hệ thống.")
-            st.caption("Bạn có thể nhập key mới bên dưới để thay thế.")
-        else:
-            st.write("Để sử dụng tính năng này miễn phí, hãy lấy API Key tại [Google AI Studio](https://aistudio.google.com/app/apikey).")
+    # === BẢNG TỔNG HỢP (dạng bảng tĩnh giống hình) ===
+    analysis_df = load_all_analysis(user_id)
+    
+    if not analysis_df.empty:
+        st.markdown(f"#### Tóm tắt chiến lược \"Gom hàng\" cho {st.session_state.get('username', '')}:")
         
-        api_key_input = st.text_input("Nhập Gemini API Key mới:", type="password", key="gemini_key_input")
-        
-        if st.button("💾 Lưu API Key"):
-            if api_key_input:
-                if save_user_api_key(user_id, api_key_input):
-                    st.session_state['gemini_api_key'] = api_key_input
-                    st.success("✅ API Key đã được mã hoá và lưu vào cơ sở dữ liệu thành công!")
-                    st.rerun()
-                else:
-                    st.error("Lỗi khi lưu API Key!")
+        # Tạo bảng hiển thị đúng format hình
+        summary_rows = []
+        for _, row in analysis_df.iterrows():
+            entry_str = f"{row['entry_min']:.1f} - {row['entry_max']:.1f}" if pd.notna(row['entry_min']) and pd.notna(row['entry_max']) else ''
+            if row['current_zone'] == 'Green':
+                zone_html = '<span style="background-color: #e6f4ea; color: #1e8e3e; padding: 4px 12px; border-radius: 20px; font-weight: bold;">🟢 Xanh</span>'
+            elif row['current_zone'] == 'Pink':
+                zone_html = '<span style="background-color: #fce8e6; color: #d93025; padding: 4px 12px; border-radius: 20px; font-weight: bold;">🔴 Hồng</span>'
+            elif row['current_zone'] == 'Neutral':
+                zone_html = '<span style="background-color: #fef7e0; color: #b08d00; padding: 4px 12px; border-radius: 20px; font-weight: bold;">🟡 Trung tính</span>'
             else:
-                st.warning("Vui lòng nhập API Key.")
+                zone_html = row['current_zone'] if row['current_zone'] else ''
                 
+            signal = row['signal_status'].replace('_', ' ') if row['signal_status'] else ''
+            action = row['action'].replace('_', ' ') if row['action'] else ''
+            
+            summary_rows.append({
+                'Mã': row['symbol'],
+                'P/E': f"{row['p_e']:.1f}" if pd.notna(row['p_e']) else '',
+                'P/B': f"{row['p_b']:.1f}" if pd.notna(row['p_b']) else '',
+                'Vùng': zone_html,
+                'Trạng thái': signal,
+                'Vùng mua (Tích sản)': entry_str,
+                'Mục tiêu': row['target'],
+                'Hành động': action,
+            })
+        
+        summary_df = pd.DataFrame(summary_rows)
+        # Sử dụng HTML Table để render được badge màu
+        table_html = summary_df.to_html(escape=False, index=False)
+        st.markdown(f"""<style>
+.custom-stock-table {{ width: 100%; border-collapse: collapse; font-family: ui-sans-serif, system-ui, -apple-system; font-size: 14px; margin-bottom: 20px; }}
+.custom-stock-table th {{ border-bottom: 2px solid #f0f2f6; color: #31333F; font-weight: 600; padding: 10px 16px; text-align: left; }}
+.custom-stock-table td {{ border-bottom: 1px solid #f0f2f6; padding: 10px 16px; color: #31333F; vertical-align: middle; }}
+</style>
+<div style="overflow-x:auto;">
+    {table_html.replace('<table border="1" class="dataframe">', '<table class="custom-stock-table">')}
+</div>""", unsafe_allow_html=True)
+        
+        # Chi tiết từng mã
+        st.markdown("### 📝 Chi tiết phân tích từng mã")
+        for _, row in analysis_df.iterrows():
+            sym = row['symbol']
+            zone_emoji = "🟢" if row['current_zone'] == 'Green' else "🔴" if row['current_zone'] == 'Pink' else "⚪"
+            entry_str = f"{row['entry_min']} - {row['entry_max']}" if pd.notna(row['entry_min']) else "Chưa có"
+            
+            with st.expander(f"{zone_emoji} **{sym}** — {row['signal_status']} | Mua: {entry_str} | Target: {row['target']}"):
+                c1, c2, c3 = st.columns(3)
+                c1.metric("P/E", f"{row['p_e']:.1f}" if pd.notna(row['p_e']) else "N/A")
+                c2.metric("P/B", f"{row['p_b']:.1f}" if pd.notna(row['p_b']) else "N/A")
+                c3.metric("EPS", row['eps_status'])
+                
+                st.markdown("---")
+                st.markdown(f"**📌 Nhận định:**\n\n{row['analysis_note']}")
+                
+                if st.button(f"🗑️ Xóa {sym}", key=f"del_{sym}"):
+                    delete_stock_analysis(user_id, sym)
+                    st.rerun()
+    else:
+        st.info("Chưa có phân tích nào. Dán JSON bên dưới để bắt đầu.")
+    
     st.divider()
     
-    st.markdown("### 🎯 Định giá Cổ phiếu")
+    # === NHẬP JSON ===
+    st.markdown("### 📥 Nhập dữ liệu JSON")
     
-    col1, col2 = st.columns([1, 2])
+    with st.expander("📄 Xem & Copy JSON Template (Mẫu chuẩn cho AI)"):
+        st.code('''{
+  "tickers": [
+    {
+      "symbol": "TICKER",
+      "fundamental": { 
+        "p_e": 0.0, 
+        "p_b": 0.0, 
+        "eps_status": "Dương/Âm" 
+      },
+      "technical_status": {
+        "current_zone": "Xanh/Hồng/Trung tính",
+        "signal": "Mô tả tín hiệu",
+        "is_buying_zone": false
+      },
+      "trading_plan": {
+        "entry_min": 0.0,
+        "entry_max": 0.0,
+        "target": 0.0,
+        "action": "Hành động khuyến nghị"
+      },
+      "analysis_note": "Nhận định chi tiết..."
+    }
+  ]
+}''', language="json")
     
-    with col1:
-        symbol_evaluate = st.text_input("Mã Cổ phiếu cần Phân tích (VD: HPG)", "").upper().strip()
+    # Dùng session_state key binding cho text_area
+    if 'json_input_key' not in st.session_state:
+        st.session_state['json_input_key'] = 0
         
-        # === DROPDOWN CHỌN TIÊU CHÍ ===
-        st.markdown("---")
-        st.markdown("**📌 Chọn Bộ Tiêu chí Định giá:**")
-        criteria_list = load_criteria_list(user_id)
-        
-        selected_criteria_id = None
-        if not criteria_list:
-            st.warning("⚠️ Chưa có tiêu chí nào. Vui lòng tạo ở Tab 'Tiêu chí Định giá' trước.")
-        else:
-            criteria_options = {f"{cname}": cid for cid, cname, _ in criteria_list}
-            selected_name = st.selectbox(
-                "Chọn tiêu chí đã lưu:", 
-                options=list(criteria_options.keys()),
-                key="criteria_dropdown"
-            )
-            selected_criteria_id = criteria_options.get(selected_name)
+    json_input = st.text_area(
+        "Dán nội dung JSON vào đây:",
+        height=300,
+        key=f"json_input_area_{st.session_state['json_input_key']}",
+        placeholder='{\n  "tickers": [\n    { "symbol": "HPG", "fundamental": {...}, "trading_plan": {...}, ... }\n  ]\n}'
+    )
+    
+    if json_input.strip():
+        try:
+            data = json.loads(json_input)
+            tickers = data.get('tickers', [])
             
-            # Hiển thị preview tiêu chí đã chọn
-            if selected_criteria_id:
-                detail = load_criteria_detail(selected_criteria_id)
-                if detail:
-                    with st.expander("👁️ Xem nội dung tiêu chí đã chọn"):
-                        if detail['notes']:
-                            st.text(detail['notes'][:300] + ("..." if len(detail['notes']) > 300 else ""))
-                        if detail['image_paths']:
-                            st.caption(f"📎 {len(detail['image_paths'])} hình ảnh đính kèm")
-        
-        st.markdown("---")
-        start_eval = st.button("🚀 Bắt đầu Đánh giá AI", type="primary", use_container_width=True)
-            
-    with col2:
-        if start_eval:
-            api_key = st.session_state.get('gemini_api_key', '')
-            if not api_key:
-                st.error("❌ Vui lòng Cấu hình Google Gemini API Key ở mục phía trên trước!")
-            elif not symbol_evaluate:
-                st.warning("❌ Vui lòng nhập Mã Cổ phiếu!")
-            elif not selected_criteria_id:
-                st.warning("❌ Vui lòng chọn một Bộ Tiêu chí!")
+            if tickers:
+                # Preview bảng trước khi import
+                preview = []
+                for t in tickers:
+                    plan = t.get('trading_plan', {})
+                    tech = t.get('technical_status', {})
+                    fund = t.get('fundamental', {})
+                    preview.append({
+                        'Mã': t['symbol'],
+                        'P/E': fund.get('p_e'),
+                        'P/B': fund.get('p_b'),
+                        'Vùng': tech.get('current_zone'),
+                        'Tín hiệu': tech.get('signal', '').replace('_', ' '),
+                        'Vùng mua': f"{plan.get('entry_min', '')} - {plan.get('entry_max', '')}",
+                        'Mục tiêu': plan.get('target'),
+                        'Hành động': plan.get('action', '').replace('_', ' '),
+                    })
+                
+                st.markdown(f"**Preview — {len(tickers)} mã:**")
+                st.dataframe(pd.DataFrame(preview), use_container_width=True, hide_index=True)
+                
+                if st.button("✅ Xác nhận Import", type="primary", use_container_width=True):
+                    if save_analysis_json(user_id, data):
+                        st.success(f"✅ Import/Cập nhật thành công {len(tickers)} mã!")
+                        # Clear text area bằng cách thay đổi key
+                        st.session_state['json_input_key'] += 1
+                        st.rerun()
             else:
-                with st.spinner(f"Đang kéo dữ liệu tài chính cho {symbol_evaluate} và phân tích bằng AI... (có thể mất 15-30s)"):
-                    # 1. Fetch data
-                    stock_data_txt = fetch_stock_data(symbol_evaluate)
-                    
-                    # 2. Lấy tiêu chí từ DB
-                    detail = load_criteria_detail(selected_criteria_id)
-                    user_notes = detail['notes'] if detail else ""
-                    user_images = detail['image_paths'] if detail else []
-                    
-                    # 3. Gửi AI
-                    result = evaluate_stock_with_ai(api_key, symbol_evaluate, stock_data_txt, user_notes, user_images)
-                    
-                    st.markdown("### 📈 Kết quả Phân tích từ AI:")
-                    st.markdown(result)
+                st.warning("JSON không chứa dữ liệu tickers.")
+        except json.JSONDecodeError:
+            st.error("❌ Nội dung JSON không hợp lệ! Kiểm tra lại cú pháp.")

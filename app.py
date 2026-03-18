@@ -5,7 +5,7 @@ from streamlit_local_storage import LocalStorage
 from auth import render_auth_ui
 from components.sidebar import render_sidebar
 from components.portfolio_tab import load_portfolio, render_portfolio_tab
-from components.valuation_tab import render_valuation_tab
+from components.valuation_tab import render_valuation_tab, check_buy_alerts
 from components.criteria_tab import render_criteria_tab
 
 # Khởi tạo LocalStorage
@@ -77,7 +77,7 @@ else:
             st.session_state['active_tab'] = 1
             st.rerun()
     with col3:
-        if st.button("🤖 Định giá Cổ phiếu", use_container_width=True,
+        if st.button("📊 Phân tích CP", use_container_width=True,
                      type="primary" if st.session_state['active_tab'] == 2 else "secondary"):
             st.session_state['active_tab'] = 2
             st.rerun()
@@ -91,6 +91,14 @@ else:
         _, _, new_title = render_portfolio_tab(portfolio, user_id)
         if new_title != st.session_state.get('page_title_info'):
             st.session_state['page_title_info'] = new_title
+        
+        # Hiển thị cảnh báo điểm mua
+        alerts = check_buy_alerts(portfolio, user_id)
+        if alerts:
+            st.divider()
+            st.markdown("### 🔔 Cảnh báo Điểm mua")
+            for alert in alerts:
+                st.warning(alert)
     elif active == 1:
         render_criteria_tab()
     elif active == 2:
