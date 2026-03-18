@@ -151,18 +151,29 @@ if st.session_state.get('logged_in'):
             realtime_data = Trading().price_board(symbols)
             sym_col = next((col for col in realtime_data.columns if 'mã' in col.lower() or 'symbol' in col.lower()), None)
             price_col = next((col for col in realtime_data.columns if 'khớp lệnh' in col.lower() or 'close' in col.lower() or 'giá' in col.lower()), None)
+            ref_col = next((col for col in realtime_data.columns if 'tham chiếu' in col.lower() or 'reference' in col.lower()), None)
             
-            if sym_col and price_col:
+            if sym_col and price_col and ref_col:
                 price_dict = dict(zip(realtime_data[sym_col], realtime_data[price_col]))
+                ref_dict = dict(zip(realtime_data[sym_col], realtime_data[ref_col]))
                 
                 # Cập nhật giá, thêm điều kiện xử lý giá bị ngàn (nhân lên 1000)
                 portfolio['Giá hiện tại'] = portfolio['Mã'].map(price_dict).astype(float)
                 portfolio['Giá hiện tại'] = portfolio['Giá hiện tại'].apply(lambda x: x * 1000 if pd.notna(x) and x < 1000 else x)
                 portfolio['Giá hiện tại'] = portfolio['Giá hiện tại'].fillna(portfolio['Giá mua'])
                 
+                # Cập nhật giá tham chiếu
+                portfolio['Giá tham chiếu'] = portfolio['Mã'].map(ref_dict).astype(float)
+                portfolio['Giá tham chiếu'] = portfolio['Giá tham chiếu'].apply(lambda x: x * 1000 if pd.notna(x) and x < 1000 else x)
+                portfolio['Giá tham chiếu'] = portfolio['Giá tham chiếu'].fillna(portfolio['Giá hiện tại'])
+                
                 portfolio['Tổng vốn'] = portfolio['Giá mua'] * portfolio['Số lượng']
                 portfolio['Giá trị hiện tại'] = portfolio['Giá hiện tại'] * portfolio['Số lượng']
                 portfolio['Lãi/Lỗ'] = portfolio['Giá trị hiện tại'] - portfolio['Tổng vốn']
+                
+                # Tính Lãi/Lỗ trong ngày
+                portfolio['Lãi/Lỗ trong ngày'] = (portfolio['Giá hiện tại'] - portfolio['Giá tham chiếu']) * portfolio['Số lượng']
+
                 
                 total_pnl = portfolio['Lãi/Lỗ'].sum()
                 total_invested = portfolio['Tổng vốn'].sum()
@@ -176,21 +187,24 @@ if st.session_state.get('logged_in'):
         except Exception as e:
             print(f"Error in vnstock calculation: {e}")
         
-        # Lưu P&L hằng ngày vào database
-        try:
-            conn = get_db_connection()
-            if conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT INTO daily_pnl (user_id, record_date, total_pnl, total_invested) 
-                    VALUES (%s, CURDATE(), %s, %s) 
-                    ON DUPLICATE KEY UPDATE total_pnl=%s, total_invested=%s
-                """, (user_id, total_pnl, total_invested, total_pnl, total_invested))
-                conn.commit()
-                cursor.close()
-                conn.close()
-        except Exception as e:
-            print(f"Error in PnL database saving: {e}")
+        # Lưu P&L hằng ngày vào database (chỉ lưu sau 14:45 khi kết phiên)
+        import datetime
+        now_vn = datetime.datetime.utcnow() + datetime.timedelta(hours=7)
+        if now_vn.hour > 14 or (now_vn.hour == 14 and now_vn.minute >= 45):
+            try:
+                conn = get_db_connection()
+                if conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        INSERT INTO daily_pnl (user_id, record_date, total_pnl, total_invested) 
+                        VALUES (%s, CURDATE(), %s, %s) 
+                        ON DUPLICATE KEY UPDATE total_pnl=%s, total_invested=%s
+                    """, (user_id, total_pnl, total_invested, total_pnl, total_invested))
+                    conn.commit()
+                    cursor.close()
+                    conn.close()
+            except Exception as e:
+                print(f"Error in PnL database saving: {e}")
 
 # Cấu hình trang (phải gọi đầu tiên hoặc sau logic tính toán không dùng streamlit component)
 st.set_page_config(page_title=page_title, layout="wide")
@@ -198,7 +212,7 @@ st.set_page_config(page_title=page_title, layout="wide")
 # Tự động refresh
 try:
     from streamlit_autorefresh import st_autorefresh
-    st_autorefresh(interval=15000, limit=None, key="data_refresh")
+    st_autorefresh(interval=30000, limit=None, key="data_refresh")
 except ImportError:
     pass
 
@@ -354,108 +368,120 @@ st.header(f"📊 Danh mục của {st.session_state['username']}")
 if not st.session_state.get('logged_in'):
     st.stop()
 
-if not portfolio.empty:
-    def color_profit_loss(val):
-        if pd.isna(val): return ''
-        color = 'green' if val > 0 else 'red' if val < 0 else 'white'
-        return f'color: {color}; font-weight: bold;'
+tab_port, tab_val = st.tabs(["Danh mục đầu tư", "Định giá cổ phiếu"])
 
-    if 'Lãi/Lỗ' in portfolio.columns:
-        portfolio['% Lãi/Lỗ'] = (portfolio['Lãi/Lỗ'] / portfolio['Tổng vốn']) * 100
-        
-        # Sắp xếp danh mục theo Tổng tài sản (Giá trị hiện tại) giảm dần
-        portfolio = portfolio.sort_values(by='Giá trị hiện tại', ascending=False)
-        
-        # Ẩn cột id khỏi giao diện
-        display_df = portfolio.drop(columns=['id']) if 'id' in portfolio.columns else portfolio
-        
-        styled_df = display_df.style.applymap(color_profit_loss, subset=['Lãi/Lỗ', '% Lãi/Lỗ'])
-        styled_df = styled_df.format({
-            'Giá mua': '{:,.0f}', 'Giá hiện tại': '{:,.0f}',
-            'Tổng vốn': '{:,.0f}', 'Giá trị hiện tại': '{:,.0f}',
-            'Lãi/Lỗ': '{:,.0f}', '% Lãi/Lỗ': '{:.2f}%'
-        })
-        st.dataframe(styled_df, use_container_width=True, hide_index=True)
-        
-        total_pnl = portfolio['Lãi/Lỗ'].sum()
-        total_invested = portfolio['Tổng vốn'].sum()
-        total_value = portfolio['Giá trị hiện tại'].sum()
-        pct_pnl_str = f"{(total_pnl/total_invested)*100 if total_invested else 0:+.2f}%"
-        
-        st.subheader("💰 Tổng quan tài khoản")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Tổng vốn đầu tư", f"{total_invested:,.0f} VNĐ")
-        col2.metric("Giá trị hiện tại", f"{total_value:,.0f} VNĐ")
-        col3.metric("Tổng Lãi/Lỗ", f"{total_pnl:,.0f} VNĐ", pct_pnl_str)
-        
-        # Hiển thị Biểu đồ PnL hằng ngày
-        conn = get_db_connection()
-        if conn:
-            daily_query = "SELECT record_date, total_pnl, total_invested FROM daily_pnl WHERE user_id = %s ORDER BY record_date"
-            daily_df = pd.read_sql(daily_query, conn, params=(user_id,))
-            conn.close()
-            
-            if not daily_df.empty:
-                st.divider()
-                st.subheader("📈 Lịch sử Lãi/Lỗ hằng ngày (%)")
+with tab_port:
+    if not portfolio.empty:
+        def color_profit_loss(val):
+            if pd.isna(val): return ''
+            color = 'green' if val > 0 else 'red' if val < 0 else 'white'
+            return f'color: {color}; font-weight: bold;'
+
+            if 'Lãi/Lỗ' in portfolio.columns:
+                portfolio['% Lãi/Lỗ'] = (portfolio['Lãi/Lỗ'] / portfolio['Tổng vốn']) * 100
                 
-                daily_df['record_date_str'] = pd.to_datetime(daily_df['record_date']).dt.strftime('%d/%m/%Y')
+                # Sắp xếp danh mục theo Tổng tài sản (Giá trị hiện tại) giảm dần
+                portfolio = portfolio.sort_values(by='Giá trị hiện tại', ascending=False)
                 
-                # Tính toán % Lãi/Lỗ và làm tròn 2 chữ số thập phân
-                daily_df['pct_pnl'] = ((daily_df['total_pnl'] / daily_df['total_invested']) * 100).round(2)
-                # Xử lý trường hợp chia cho 0 nếu total_invested = 0
-                daily_df['pct_pnl'] = daily_df['pct_pnl'].fillna(0)
+                # Ẩn cột id và Giá tham chiếu khỏi giao diện để đỡ rối mắt
+                display_df = portfolio.drop(columns=['id', 'Giá tham chiếu']) if 'id' in portfolio.columns else portfolio
                 
-                categories = daily_df['record_date_str'].tolist()
-                data = daily_df['pct_pnl'].tolist()
+                subset_cols = ['Lãi/Lỗ', '% Lãi/Lỗ']
+                if 'Lãi/Lỗ trong ngày' in display_df.columns:
+                    subset_cols.append('Lãi/Lỗ trong ngày')
+                    
+                styled_df = display_df.style.applymap(color_profit_loss, subset=subset_cols)
+                styled_df = styled_df.format({
+                    'Giá mua': '{:,.0f}', 'Giá hiện tại': '{:,.0f}',
+                    'Tổng vốn': '{:,.0f}', 'Giá trị hiện tại': '{:,.0f}',
+                    'Lãi/Lỗ': '{:,.0f}', '% Lãi/Lỗ': '{:.2f}%',
+                    'Lãi/Lỗ trong ngày': '{:,.0f}'
+                })
+                st.dataframe(styled_df, use_container_width=True, hide_index=True)
                 
-                highchart_html = f"""
-                <script src="https://cdnjs.cloudflare.com/ajax/libs/highcharts/11.4.0/highcharts.js"></script>
-                <div id="container" style="width:100%; height:300px;"></div>
-                <script>
-                    var checkInterval = setInterval(function() {{
-                        if (typeof Highcharts !== 'undefined') {{
-                            clearInterval(checkInterval);
-                            Highcharts.chart('container', {{
-                                chart: {{
-                                    type: 'areaspline',
-                                    backgroundColor: 'transparent'
-                                }},
-                                title: {{ text: null }},
-                                xAxis: {{
-                                    categories: {json.dumps(categories)},
-                                    labels: {{ style: {{ color: '#aaaaaa' }} }},
-                                    gridLineColor: '#333333'
-                                }},
-                                yAxis: {{
-                                    title: {{ text: null }},
-                                    labels: {{ format: '{{value}}%', style: {{ color: '#aaaaaa' }} }},
-                                    gridLineColor: '#333333'
-                                }},
-                                legend: {{ enabled: false }},
-                                credits: {{ enabled: false }},
-                                tooltip: {{
-                                    pointFormat: '<b>{{point.y}}%</b>'
-                                }},
-                                plotOptions: {{
-                                    areaspline: {{
-                                        fillOpacity: 0.2,
-                                        color: '#00ff00',
-                                        marker: {{ enabled: true, radius: 4 }}
-                                    }}
-                                }},
-                                series: [{{
-                                    name: 'Lãi/Lỗ',
-                                    data: {json.dumps(data)}
-                                }}]
-                            }});
-                        }}
-                    }}, 50);
-                </script>
-                """
-                components.html(highchart_html, height=330)
+                total_pnl = portfolio['Lãi/Lỗ'].sum()
+                total_invested = portfolio['Tổng vốn'].sum()
+                total_value = portfolio['Giá trị hiện tại'].sum()
+                pct_pnl_str = f"{(total_pnl/total_invested)*100 if total_invested else 0:+.2f}%"
+                
+                st.subheader("💰 Tổng quan tài khoản")
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Tổng vốn đầu tư", f"{total_invested:,.0f} VNĐ")
+                col2.metric("Giá trị hiện tại", f"{total_value:,.0f} VNĐ")
+                col3.metric("Tổng Lãi/Lỗ", f"{total_pnl:,.0f} VNĐ", pct_pnl_str)
+                
+                # Hiển thị Biểu đồ PnL hằng ngày
+                conn = get_db_connection()
+                if conn:
+                    daily_query = "SELECT record_date, total_pnl, total_invested FROM daily_pnl WHERE user_id = %s ORDER BY record_date"
+                    daily_df = pd.read_sql(daily_query, conn, params=(user_id,))
+                    conn.close()
+                    
+                    if not daily_df.empty:
+                        st.divider()
+                        st.subheader("📈 Lịch sử Lãi/Lỗ hằng ngày (%)")
+                        
+                        daily_df['record_date_str'] = pd.to_datetime(daily_df['record_date']).dt.strftime('%d/%m/%Y')
+                        
+                        # Tính toán % Lãi/Lỗ và làm tròn 2 chữ số thập phân
+                        daily_df['pct_pnl'] = ((daily_df['total_pnl'] / daily_df['total_invested']) * 100).round(2)
+                        # Xử lý trường hợp chia cho 0 nếu total_invested = 0
+                        daily_df['pct_pnl'] = daily_df['pct_pnl'].fillna(0)
+                        
+                        categories = daily_df['record_date_str'].tolist()
+                        data = daily_df['pct_pnl'].tolist()
+                        
+                        highchart_html = f"""
+                        <script src="https://cdnjs.cloudflare.com/ajax/libs/highcharts/11.4.0/highcharts.js"></script>
+                        <div id="container" style="width:100%; height:300px;"></div>
+                        <script>
+                            var checkInterval = setInterval(function() {{
+                                if (typeof Highcharts !== 'undefined') {{
+                                    clearInterval(checkInterval);
+                                    Highcharts.chart('container', {{
+                                        chart: {{
+                                            type: 'areaspline',
+                                            backgroundColor: 'transparent'
+                                        }},
+                                        title: {{ text: null }},
+                                        xAxis: {{
+                                            categories: {json.dumps(categories)},
+                                            labels: {{ style: {{ color: '#aaaaaa' }} }},
+                                            gridLineColor: '#333333'
+                                        }},
+                                        yAxis: {{
+                                            title: {{ text: null }},
+                                            labels: {{ format: '{{value}}%', style: {{ color: '#aaaaaa' }} }},
+                                            gridLineColor: '#333333'
+                                        }},
+                                        legend: {{ enabled: false }},
+                                        credits: {{ enabled: false }},
+                                        tooltip: {{
+                                            pointFormat: '<b>{{point.y}}%</b>'
+                                        }},
+                                        plotOptions: {{
+                                            areaspline: {{
+                                                fillOpacity: 0.2,
+                                                color: '#00ff00',
+                                                marker: {{ enabled: true, radius: 4 }}
+                                            }}
+                                        }},
+                                        series: [{{
+                                            name: 'Lãi/Lỗ',
+                                            data: {json.dumps(data)}
+                                        }}]
+                                    }});
+                                }}
+                            }}, 50);
+                        </script>
+                        """
+                        components.html(highchart_html, height=330)
+            else:
+                st.dataframe(portfolio, use_container_width=True, hide_index=True)
     else:
-        st.dataframe(portfolio, use_container_width=True, hide_index=True)
-else:
-    st.info("Danh mục đang trống. Hãy thêm cổ phiếu ở sidebar.")
+        st.info("Danh mục đang trống. Hãy thêm cổ phiếu ở sidebar.")
+
+with tab_val:
+    st.subheader("Phân tích & Định giá Cổ phiếu")
+    st.info("Chức năng đang được phát triển...")
 
