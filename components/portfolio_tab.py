@@ -7,7 +7,7 @@ from database import get_db_connection
 def load_portfolio(user_id):
     conn = get_db_connection()
     if not conn: return pd.DataFrame()
-    query = "SELECT id, symbol as Mã, buy_price as 'Giá mua', quantity as 'Số lượng' FROM portfolio WHERE user_id = %s"
+    query = "SELECT id, symbol as Mã, buy_price as 'Giá mua', quantity as 'Số lượng', is_watchlist FROM portfolio WHERE user_id = %s"
     df = pd.read_sql(query, conn, params=(user_id,))
     conn.close()
     return df
@@ -73,8 +73,9 @@ def render_portfolio_tab(portfolio, user_id):
                 portfolio['% Tăng/Giảm (Ngày)'] = ((portfolio['Giá hiện tại'] - portfolio['Giá tham chiếu']) / portfolio['Giá tham chiếu'].replace(0, pd.NA)) * 100
                 portfolio['% Tăng/Giảm (Ngày)'] = portfolio['% Tăng/Giảm (Ngày)'].fillna(0)
                 
-                total_pnl = portfolio['Lãi/Lỗ'].sum()
-                total_invested = portfolio['Tổng vốn'].sum()
+                invested_mask = portfolio['is_watchlist'] == False if 'is_watchlist' in portfolio.columns else pd.Series(True, index=portfolio.index)
+                total_pnl = portfolio.loc[invested_mask, 'Lãi/Lỗ'].sum()
+                total_invested = portfolio.loc[invested_mask, 'Tổng vốn'].sum()
                 pct_pnl_val = (total_pnl / total_invested * 100) if total_invested else 0
                 
                 sign = "+" if total_pnl >= 0 else ""
@@ -142,8 +143,10 @@ def render_portfolio_tab(portfolio, user_id):
                         min_price = float(min_p) * 1000
                         max_price = float(max_p) * 1000
                         
-                        if price < min_price or price > max_price:
+                        if price > max_price:
                             return "Chờ đợi"
+                        elif price < min_price:
+                            return "Mua mạnh"
                             
                         range_val = max_price - min_price
                         if range_val <= 0:
@@ -168,31 +171,47 @@ def render_portfolio_tab(portfolio, user_id):
             print(f"Error calculating action: {e}")
         # ----------------------------------------------------
         
-        # Sắp xếp danh mục
-        portfolio = portfolio.sort_values(by='Giá trị hiện tại', ascending=False)
-        
-        # Ẩn cột
-        display_df = portfolio.drop(columns=['id', 'Giá tham chiếu']) if 'id' in portfolio.columns else portfolio
+        # Tách danh mục đầu tư và theo dõi
+        is_wl_col = 'is_watchlist' in portfolio.columns
+        invested_df = portfolio[portfolio['is_watchlist'] == False].copy() if is_wl_col else portfolio.copy()
+        watchlist_df = portfolio[portfolio['is_watchlist'] == True].copy() if is_wl_col else pd.DataFrame()
+
+        # Render BẢNG ĐẦU TƯ
+        invested_df = invested_df.sort_values(by='Giá trị hiện tại', ascending=False)
+        display_invested = invested_df.drop(columns=['id', 'Giá tham chiếu', 'is_watchlist'], errors='ignore')
         
         subset_cols = ['Lãi/Lỗ', '% Lãi/Lỗ']
-        if 'Lãi/Lỗ trong ngày' in display_df.columns:
+        if 'Lãi/Lỗ trong ngày' in display_invested.columns:
             subset_cols.append('Lãi/Lỗ trong ngày')
-        if '% Tăng/Giảm (Ngày)' in display_df.columns:
+        if '% Tăng/Giảm (Ngày)' in display_invested.columns:
             subset_cols.append('% Tăng/Giảm (Ngày)')
             
-        styled_df = display_df.style.applymap(color_profit_loss, subset=subset_cols)
-        if 'Hành động' in display_df.columns:
-            styled_df = styled_df.applymap(color_action, subset=['Hành động'])
+        styled_inv = display_invested.style.applymap(color_profit_loss, subset=subset_cols)
+        if 'Hành động' in display_invested.columns:
+            styled_inv = styled_inv.applymap(color_action, subset=['Hành động'])
             
-        styled_df = styled_df.format({
+        styled_inv = styled_inv.format({
             'Giá mua': '{:,.0f}', 'Giá hiện tại': '{:,.0f}',
             'Tổng vốn': '{:,.0f}', 'Giá trị hiện tại': '{:,.0f}',
             'Lãi/Lỗ': '{:,.0f}', '% Lãi/Lỗ': '{:.2f}%',
             'Lãi/Lỗ trong ngày': '{:,.0f}', '% Tăng/Giảm (Ngày)': '{:+.2f}%'
         })
-        st.dataframe(styled_df, use_container_width=True, hide_index=True)
+        st.dataframe(styled_inv, use_container_width=True, hide_index=True)
         
-        total_value = portfolio['Giá trị hiện tại'].sum()
+        # Render BẢNG THEO DÕI (nếu có)
+        if not watchlist_df.empty:
+            st.markdown("#### 👀 Danh mục theo dõi")
+            wl_display = watchlist_df[['Mã', 'Giá hiện tại', '% Tăng/Giảm (Ngày)', 'Hành động']].copy()
+            wl_styled = wl_display.style.applymap(color_profit_loss, subset=['% Tăng/Giảm (Ngày)'])
+            if 'Hành động' in wl_display.columns:
+                wl_styled = wl_styled.applymap(color_action, subset=['Hành động'])
+            wl_styled = wl_styled.format({
+                'Giá hiện tại': '{:,.0f}',
+                '% Tăng/Giảm (Ngày)': '{:+.2f}%'
+            })
+            st.dataframe(wl_styled, use_container_width=True, hide_index=True)
+        
+        total_value = invested_df['Giá trị hiện tại'].sum()
         pct_pnl_str = f"{(total_pnl/total_invested)*100 if total_invested else 0:+.2f}%"
         
         st.subheader("💰 Tổng quan tài khoản")

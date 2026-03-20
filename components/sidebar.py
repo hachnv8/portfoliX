@@ -25,9 +25,18 @@ def render_sidebar(localS, portfolio):
         with st.form("add_stock_form", clear_on_submit=True):
             symbol_input = st.text_input("Mã Cổ phiếu (VD: VCB)")
             symbol = symbol_input.upper().strip() if symbol_input else ""
-            buy_price_input = st.number_input("Giá mua", min_value=0.0, step=0.1)
-            quantity = st.number_input("Số lượng cổ phiếu", min_value=1, step=100)
-            submitted = st.form_submit_button("Thêm vào danh mục")
+            
+            stock_type = st.radio("Loại", options=["Cổ phiếu đã mua", "Cổ phiếu theo dõi"], horizontal=True)
+            is_wl = True if stock_type == "Cổ phiếu theo dõi" else False
+            
+            if not is_wl:
+                buy_price_input = st.number_input("Giá mua", min_value=0.0, step=0.1)
+                quantity = st.number_input("Số lượng cổ phiếu", min_value=1, step=100)
+            else:
+                buy_price_input = 0.0
+                quantity = 0
+                
+            submitted = st.form_submit_button("Thêm")
             
             if submitted:
                 buy_price = buy_price_input * 1000 if 0 < buy_price_input < 1000 else buy_price_input
@@ -40,12 +49,15 @@ def render_sidebar(localS, portfolio):
                         
                         if existing_row:
                             row_id, old_price, old_quantity = existing_row
-                            new_quantity = old_quantity + quantity
-                            new_avg_price = ((old_price * old_quantity) + (buy_price * quantity)) / new_quantity
-                            cursor.execute("UPDATE portfolio SET buy_price = %s, quantity = %s WHERE id = %s", (new_avg_price, new_quantity, row_id))
+                            if is_wl:
+                                cursor.execute("UPDATE portfolio SET is_watchlist = 1 WHERE id = %s", (row_id,))
+                            else:
+                                new_quantity = old_quantity + quantity
+                                new_avg_price = ((old_price * old_quantity) + (buy_price * quantity)) / new_quantity if new_quantity > 0 else old_price
+                                cursor.execute("UPDATE portfolio SET buy_price = %s, quantity = %s, is_watchlist = 0 WHERE id = %s", (new_avg_price, new_quantity, row_id))
                         else:
-                            cursor.execute("INSERT INTO portfolio (user_id, symbol, buy_price, quantity) VALUES (%s, %s, %s, %s)", 
-                                         (user_id, symbol, buy_price, quantity))
+                            cursor.execute("INSERT INTO portfolio (user_id, symbol, buy_price, quantity, is_watchlist) VALUES (%s, %s, %s, %s, %s)", 
+                                         (user_id, symbol, buy_price, quantity, is_wl))
                         conn.commit()
                         cursor.close()
                         conn.close()
@@ -66,30 +78,39 @@ def render_sidebar(localS, portfolio):
             if selected_symbol:
                 # Lấy thông tin hiện tại của mã đó
                 row = portfolio[portfolio['Mã'] == selected_symbol].iloc[0]
-                current_price = float(row['Giá mua'])
-                current_qty = int(row['Số lượng'])
+                is_row_wl = row.get('is_watchlist', False)
                 
                 # Form chỉnh sửa
                 with st.form("edit_stock_form"):
-                    new_price_input = st.number_input("Giá mua mới", min_value=0.0, value=current_price/1000 if current_price < 1000000 else current_price, step=0.1)
-                    new_qty = st.number_input("Số lượng mới", min_value=1, value=current_qty, step=1)
-                    
+                    if not is_row_wl:
+                        current_price = float(row['Giá mua'])
+                        current_qty = int(row['Số lượng'])
+                        new_price_input = st.number_input("Giá mua mới", min_value=0.0, value=current_price/1000 if current_price < 1000000 else current_price, step=0.1)
+                        new_qty = st.number_input("Số lượng mới", min_value=1, value=current_qty, step=1)
+                    else:
+                        st.info("Cổ phiếu theo dõi không có tuỳ chỉnh giá hay số lượng.")
+                        new_price_input = 0.0
+                        new_qty = 0
+                        
                     col_edit, col_del = st.columns(2)
                     update_btn = col_edit.form_submit_button("Cập nhật")
                     delete_btn = col_del.form_submit_button("Xóa mã này")
                     
                     if update_btn:
-                        new_price = new_price_input * 1000 if 0 < new_price_input < 1000 else new_price_input
-                        conn = get_db_connection()
-                        if conn:
-                            cursor = conn.cursor()
-                            cursor.execute("UPDATE portfolio SET buy_price = %s, quantity = %s WHERE symbol = %s AND user_id = %s", 
-                                         (new_price, new_qty, selected_symbol, user_id))
-                            conn.commit()
-                            cursor.close()
-                            conn.close()
-                            st.success(f"Đã cập nhật {selected_symbol}!")
-                            return True
+                        if not is_row_wl:
+                            new_price = new_price_input * 1000 if 0 < new_price_input < 1000 else new_price_input
+                            conn = get_db_connection()
+                            if conn:
+                                cursor = conn.cursor()
+                                cursor.execute("UPDATE portfolio SET buy_price = %s, quantity = %s WHERE symbol = %s AND user_id = %s", 
+                                             (new_price, new_qty, selected_symbol, user_id))
+                                conn.commit()
+                                cursor.close()
+                                conn.close()
+                                st.success(f"Đã cập nhật {selected_symbol}!")
+                                return True
+                        else:
+                            st.info("Không có dữ liệu gì để cập nhật cho cổ phiếu theo dõi.")
                     
                     if delete_btn:
                         conn = get_db_connection()

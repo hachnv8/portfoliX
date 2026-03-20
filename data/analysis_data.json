@@ -1,0 +1,84 @@
+{
+  "tickers": [
+    {
+      "symbol": "HPG",
+      "fundamental": { "p_e": 13.3, "p_b": 1.6, "eps_status": "Dương" },
+      "technical_status": {
+        "current_zone": "Xanh",
+        "signal": "Kiểm tra lại đường EMA 20 (Đường cam)",
+        "is_buying_zone": true
+      },
+      "trading_plan": {
+        "entry_min": 25.5,
+        "entry_max": 27.0,
+        "target": 35.0,
+        "action": "Gom tích lũy"
+      },
+      "analysis_note": "HPG thường bám sát EMA 20 để đi lên. Điểm mua lý tưởng là khi giá điều chỉnh về vùng 25.5 - 26.5 (test lại mây Xanh hoặc chạm đường cam). Nếu có biến cố vĩ mô đưa giá về sát EMA 610 (quanh 23.x), đây là cơ hội tích sản cực lớn."
+    },
+    {
+      "symbol": "NLG",
+      "fundamental": { "p_e": 15.5, "p_b": 1.2, "eps_status": "Dương" },
+      "technical_status": {
+        "current_zone": "Hồng",
+        "signal": "Đang trong nhịp giảm",
+        "is_buying_zone": false
+      },
+      "trading_plan": {
+        "entry_min": 24.5,
+        "entry_max": 25.5,
+        "target": 33.5,
+        "action": "Chờ đợi vùng Xanh trở lại"
+      },
+      "analysis_note": "Mã này biến động ATR khá rộng. Hiện giá đang ở Vùng Hồng (Dưới EMA 20). Không mua đuổi khi đang hồng. Hãy đợi giá vượt lại trên 28.0 (xuất hiện mũi tên Buy Xanh) hoặc gom dần nếu giá lùi về vùng hỗ trợ cứng 24.5 - 25.0."
+    },
+    {
+      "symbol": "SZC",
+      "fundamental": { "p_e": 15.2, "p_b": 2.1, "eps_status": "Dương" },
+      "technical_status": {
+        "current_zone": "Hồng",
+        "signal": "Điều chỉnh sâu",
+        "is_buying_zone": false
+      },
+      "trading_plan": {
+        "entry_min": 27.5,
+        "entry_max": 28.5,
+        "target": 38.0,
+        "action": "Đợi tín hiệu đảo chiều"
+      },
+      "analysis_note": "Bạn đang lỗ nặng nhất mã này (-8.16%) chứng tỏ giá đang nằm sâu trong Vùng Hồng. Với chiến lược tích sản, đừng mua thêm lúc nó đang rơi. Hãy đợi tín hiệu ta.crossover(close, ema) vượt trên mây hồng để xác nhận đảo chiều. Vùng giá quan sát để gom thêm là quanh 27.5 - 28.5."
+    },
+    {
+      "symbol": "TPB",
+      "fundamental": { "p_e": 7.5, "p_b": 1.0, "eps_status": "Dương" },
+      "technical_status": {
+        "current_zone": "Trung tính",
+        "signal": "Đi ngang tích lũy",
+        "is_buying_zone": true
+      },
+      "trading_plan": {
+        "entry_min": 15.0,
+        "entry_max": 16.0,
+        "target": 22.0,
+        "action": "Gom hàng an toàn"
+      },
+      "analysis_note": "Dòng Bank thường đi ngang tích lũy lâu (vùng nhiễu màu). Điểm mua lý tưởng là khi giá test lại EMA 610 (đường màu xanh cyan). Vùng giá 15.0 - 15.8 là hỗ trợ cực mạnh, phù hợp để nhặt dần cho mục tiêu trung hạn."
+    },
+    {
+      "symbol": "EVF",
+      "fundamental": { "p_e": 16.5, "p_b": 1.15, "eps_status": "Dương" },
+      "technical_status": {
+        "current_zone": "Hồng",
+        "signal": "Đang tích lũy sau nhịp điều chỉnh mạnh",
+        "is_buying_zone": false
+      },
+      "trading_plan": {
+        "entry_min": 14.5,
+        "entry_max": 15.5,
+        "target": 20.0,
+        "action": "Theo dõi sát mây Xanh"
+      },
+      "analysis_note": "EVF hiện đang nằm trong Vùng Hồng sau đợt sụt giảm từ vùng giá 18.x. Giá đang kiểm tra lại vùng hỗ trợ quanh 14.5 - 15.0. Tuyệt đối không mua thêm khi mây còn Hồng đậm. Hãy đợi tín hiệu nến xanh vượt lên trên EMA 20 để xác nhận xu hướng tăng trở lại. Điểm tựa cuối cùng là EMA 610 quanh vùng 13.0."
+    }
+  ]
+}

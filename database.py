@@ -61,6 +61,10 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users (id)
             )
         ''')
+        # Thêm is_watchlist vào portfolio nếu chưa có
+        cursor.execute("SHOW COLUMNS FROM portfolio LIKE 'is_watchlist'")
+        if not cursor.fetchone():
+            cursor.execute("ALTER TABLE portfolio ADD COLUMN is_watchlist BOOLEAN DEFAULT FALSE")
         # Tạo bảng daily_pnl
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS daily_pnl (
