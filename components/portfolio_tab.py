@@ -70,6 +70,8 @@ def render_portfolio_tab(portfolio, user_id):
                 portfolio['Lãi/Lỗ'] = portfolio['Giá trị hiện tại'] - portfolio['Tổng vốn']
                 
                 portfolio['Lãi/Lỗ trong ngày'] = (portfolio['Giá hiện tại'] - portfolio['Giá tham chiếu']) * portfolio['Số lượng']
+                portfolio['% Tăng/Giảm (Ngày)'] = ((portfolio['Giá hiện tại'] - portfolio['Giá tham chiếu']) / portfolio['Giá tham chiếu'].replace(0, pd.NA)) * 100
+                portfolio['% Tăng/Giảm (Ngày)'] = portfolio['% Tăng/Giảm (Ngày)'].fillna(0)
                 
                 total_pnl = portfolio['Lãi/Lỗ'].sum()
                 total_invested = portfolio['Tổng vốn'].sum()
@@ -108,8 +110,63 @@ def render_portfolio_tab(portfolio, user_id):
         color = 'green' if val > 0 else 'red' if val < 0 else 'white'
         return f'color: {color}; font-weight: bold;'
 
+    def color_action(val):
+        if val == "Bắt đầu mua":
+            return 'color: #00b894; font-weight: bold;' # Xanh ngọc
+        elif val == "Mua dần":
+            return 'color: #f39c12; font-weight: bold;' # Cam
+        elif val == "Mua mạnh":
+            return 'color: #e74c3c; font-weight: bold;' # Đỏ
+        elif val == "Chờ đợi":
+            return 'color: #95a5a6;' # Xám
+        return ''
+
     if 'Lãi/Lỗ' in portfolio.columns:
         portfolio['% Lãi/Lỗ'] = (portfolio['Lãi/Lỗ'] / portfolio['Tổng vốn']) * 100
+        
+        # --- Lấy phân tích cổ phiếu và thêm cột Hành động ---
+        try:
+            from components.valuation_tab import load_all_analysis
+            analysis_df = load_all_analysis(user_id)
+            if not analysis_df.empty:
+                analysis_dict = analysis_df.set_index('symbol')[['entry_min', 'entry_max']].to_dict('index')
+                
+                def determine_action(row):
+                    sym = row.get('Mã')
+                    price = row.get('Giá hiện tại')
+                    if sym in analysis_dict:
+                        min_p = analysis_dict[sym].get('entry_min')
+                        max_p = analysis_dict[sym].get('entry_max')
+                        if pd.isna(price) or pd.isna(min_p) or pd.isna(max_p):
+                            return "Chờ đợi"
+                        min_price = float(min_p) * 1000
+                        max_price = float(max_p) * 1000
+                        
+                        if price < min_price or price > max_price:
+                            return "Chờ đợi"
+                            
+                        range_val = max_price - min_price
+                        if range_val <= 0:
+                            return "Chờ đợi"
+                            
+                        one_third = range_val / 3.0
+                        
+                        # Dùng sai số nhỏ -1.0 để khớp chính xác các mốc như 26.5, 26.0
+                        if price >= max_price - one_third - 1.0:
+                            return "Bắt đầu mua"
+                        elif price >= min_price + one_third - 1.0:
+                            return "Mua dần"
+                        else:
+                            return "Mua mạnh"
+                    return "Chờ đợi"
+                
+                portfolio['Hành động'] = portfolio.apply(determine_action, axis=1)
+            else:
+                portfolio['Hành động'] = "Chờ đợi"
+        except Exception as e:
+            portfolio['Hành động'] = "Chờ đợi"
+            print(f"Error calculating action: {e}")
+        # ----------------------------------------------------
         
         # Sắp xếp danh mục
         portfolio = portfolio.sort_values(by='Giá trị hiện tại', ascending=False)
@@ -120,13 +177,18 @@ def render_portfolio_tab(portfolio, user_id):
         subset_cols = ['Lãi/Lỗ', '% Lãi/Lỗ']
         if 'Lãi/Lỗ trong ngày' in display_df.columns:
             subset_cols.append('Lãi/Lỗ trong ngày')
+        if '% Tăng/Giảm (Ngày)' in display_df.columns:
+            subset_cols.append('% Tăng/Giảm (Ngày)')
             
         styled_df = display_df.style.applymap(color_profit_loss, subset=subset_cols)
+        if 'Hành động' in display_df.columns:
+            styled_df = styled_df.applymap(color_action, subset=['Hành động'])
+            
         styled_df = styled_df.format({
             'Giá mua': '{:,.0f}', 'Giá hiện tại': '{:,.0f}',
             'Tổng vốn': '{:,.0f}', 'Giá trị hiện tại': '{:,.0f}',
             'Lãi/Lỗ': '{:,.0f}', '% Lãi/Lỗ': '{:.2f}%',
-            'Lãi/Lỗ trong ngày': '{:,.0f}'
+            'Lãi/Lỗ trong ngày': '{:,.0f}', '% Tăng/Giảm (Ngày)': '{:+.2f}%'
         })
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
         
